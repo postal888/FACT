@@ -3531,6 +3531,7 @@
       <span class="tw-refine-spacer"></span>
       <button class="btn btn-ghost btn-sm" onclick="selectAllDrafts(true)">Выделить все</button>
       <button class="btn btn-ghost btn-sm" onclick="selectAllDrafts(false)">Снять все</button>
+      <button class="btn btn-ghost btn-sm" onclick="clearDrafts()" title="Удалить все черновики">Очистить все</button>
     </div>
 
     <div id="tw-drafts-list"></div>
@@ -6452,23 +6453,28 @@
             ${d.source ? ' · ' + escHtml(d.source) : ''}
             ${d.date ? ' · ' + escHtml(d.date) : ''}
           </span>
-          <button onclick="translateOne(${i})" id="tw-trbtn-${i}"
-            class="btn-translate" title="Перевести на русский">RU</button>
+          <span style="display:inline-flex;gap:6px;align-items:center">
+            <button onclick="translateOne(${i})" id="tw-trbtn-${i}"
+              class="btn-translate" title="Перевести на русский">RU</button>
+            <button onclick="deleteDraft(${i})" id="tw-delbtn-${i}"
+              class="btn-translate" title="Удалить черновик"
+              style="color:var(--muted)">✕</button>
+          </span>
         </div>
 
-        <div class="tw-post-unit is-checked" id="tw-unit-en-${i}">
+        <div class="tw-post-unit${d.checkedEn === false ? '' : ' is-checked'}" id="tw-unit-en-${i}">
           <div class="tw-post-unit-head">
             <label class="tw-post-unit-select">
-              <input type="checkbox" id="tw-chk-en-${i}" checked
+              <input type="checkbox" id="tw-chk-en-${i}" ${d.checkedEn === false ? '' : 'checked'}
                 onchange="onPostUnitCheck(${i}, 'en'); updateSendPublisherHint()">
               <span class="draft-lang-label" style="margin:0">${primaryLabel}</span>
             </label>
             <select class="tw-post-platform" id="tw-plat-en-${i}"
               onchange="updatePostCharCount(${i}, 'en')">
-              <option value="twitter"${defaultPlat === 'twitter' ? ' selected' : ''}>Twitter</option>
-              <option value="telegram"${defaultPlat === 'telegram' ? ' selected' : ''}>Telegram</option>
+              <option value="twitter"${(d.platEn || defaultPlat) === 'twitter' ? ' selected' : ''}>Twitter</option>
+              <option value="telegram"${(d.platEn || defaultPlat) === 'telegram' ? ' selected' : ''}>Telegram</option>
             </select>
-            <span id="tw-chars-${i}" class="char-count">${d.draft.length} / ${defaultPlat === 'telegram' ? 4096 : 280}</span>
+            <span id="tw-chars-${i}" class="char-count">${d.draft.length} / ${(d.platEn || defaultPlat) === 'telegram' ? 4096 : 280}</span>
           </div>
           <textarea id="tw-text-${i}" class="tw-textarea${_postFormat === 'brief' ? ' is-brief' : ''}"
             oninput="updatePostCharCount(${i}, 'en')">${escHtml(d.draft)}</textarea>
@@ -6476,28 +6482,72 @@
           <div id="tw-result-en-${i}" class="tw-post-result" style="display:none"></div>
         </div>
 
-        <div class="tw-post-unit" id="tw-unit-ru-${i}" style="display:none">
+        <div class="tw-post-unit${d.draftRu ? ' is-checked' : ''}" id="tw-unit-ru-${i}" style="display:${d.draftRu ? 'block' : 'none'}">
           <div class="tw-post-unit-head">
             <label class="tw-post-unit-select">
-              <input type="checkbox" id="tw-chk-ru-${i}" checked
+              <input type="checkbox" id="tw-chk-ru-${i}" ${d.checkedRu === false ? '' : 'checked'}
                 onchange="onPostUnitCheck(${i}, 'ru'); updateSendPublisherHint()">
               <span class="draft-lang-label" style="margin:0">Русский</span>
             </label>
             <select class="tw-post-platform" id="tw-plat-ru-${i}"
               onchange="updatePostCharCount(${i}, 'ru')">
-              <option value="twitter">Twitter</option>
-              <option value="telegram" selected>Telegram</option>
+              <option value="twitter"${d.platRu === 'twitter' ? ' selected' : ''}>Twitter</option>
+              <option value="telegram"${(d.platRu || 'telegram') === 'telegram' ? ' selected' : ''}>Telegram</option>
             </select>
             <span id="tw-chars-ru-${i}" class="char-count">0 / 4096</span>
           </div>
           <textarea id="tw-text-ru-${i}" class="tw-textarea${_postFormat === 'brief' ? ' is-brief' : ''}"
-            oninput="updatePostCharCount(${i}, 'ru')"></textarea>
+            oninput="updatePostCharCount(${i}, 'ru')">${escHtml(d.draftRu || '')}</textarea>
           ${draftRefineBar(i, 'ru')}
           <div id="tw-result-ru-${i}" class="tw-post-result" style="display:none"></div>
         </div>
       </div>
     `).join('');
     updateDraftCount();
+    updateSendPublisherHint();
+  }
+
+  // Read current DOM edits (text, translation, platform, checkboxes) back into _drafts
+  // so re-rendering after a delete does not lose in-place edits or translations.
+  function syncDraftsFromDOM() {
+    _drafts.forEach((d, i) => {
+      const enTa = document.getElementById(`tw-text-${i}`);
+      if (enTa) d.draft = enTa.value;
+      const ruTa = document.getElementById(`tw-text-ru-${i}`);
+      const ruUnit = document.getElementById(`tw-unit-ru-${i}`);
+      if (ruTa && ruUnit && ruUnit.style.display !== 'none' && ruTa.value.trim()) {
+        d.draftRu = ruTa.value;
+      }
+      const platEn = document.getElementById(`tw-plat-en-${i}`);
+      if (platEn) d.platEn = platEn.value;
+      const platRu = document.getElementById(`tw-plat-ru-${i}`);
+      if (platRu) d.platRu = platRu.value;
+      const chkEn = document.getElementById(`tw-chk-en-${i}`);
+      if (chkEn) d.checkedEn = chkEn.checked;
+      const chkRu = document.getElementById(`tw-chk-ru-${i}`);
+      if (chkRu) d.checkedRu = chkRu.checked;
+    });
+  }
+
+  function deleteDraft(i) {
+    if (i < 0 || i >= _drafts.length) return;
+    syncDraftsFromDOM();
+    _drafts.splice(i, 1);
+    if (_drafts.length === 0) {
+      document.getElementById('tw-drafts-list').innerHTML = '';
+      document.getElementById('tw-drafts-wrap').style.display = 'none';
+      updateSendPublisherHint();
+      return;
+    }
+    renderDrafts(_drafts);
+  }
+
+  function clearDrafts() {
+    if (!_drafts.length) return;
+    if (!confirm(`Удалить все черновики (${_drafts.length})? Это очистит список, чтобы сгенерировать новые.`)) return;
+    _drafts = [];
+    document.getElementById('tw-drafts-list').innerHTML = '';
+    document.getElementById('tw-drafts-wrap').style.display = 'none';
     updateSendPublisherHint();
   }
 
