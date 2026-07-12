@@ -1,0 +1,3774 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Factiva Exporter</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #070708;
+      --bg-2:      #0c0c0f;
+      --surface:   #111116;
+      --surface-2: #18181f;
+      --surface-3: #1f1f28;
+      --border:    #2a2a34;
+      --border-2:  #3a3a48;
+      --accent:    #f2f2f4;
+      --text:      #ececf0;
+      --muted:     #656570;
+      --muted-2:   #9898a4;
+
+      /* Accent palette — state & action, not decoration */
+      --green:       #3ecf8e;
+      --green-dim:   #2eb87a;
+      --green-glow:  rgba(62, 207, 142, 0.35);
+      --green-tint:  rgba(62, 207, 142, 0.12);
+      --amber:       #e8b84a;
+      --amber-glow:  rgba(232, 184, 74, 0.3);
+      --sky:         #6eb5ff;
+      --sky-tint:    rgba(110, 181, 255, 0.12);
+      --red:         #f07070;
+      --red-tint:    rgba(240, 112, 112, 0.12);
+      --yellow:      var(--amber);
+
+      --radius:    10px;
+      --radius-sm: 6px;
+      --rail-w:    168px;
+      --sidebar-w: 212px;
+      --topbar-h:  52px;
+      --content-w: 920px;
+
+      --ease-out:    cubic-bezier(0.23, 1, 0.32, 1);
+      --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+      --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+
+      /* Typography — 2 fonts only */
+      --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+      --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+    }
+
+    /* Mono layer — single source of truth */
+    .type-mono,
+    #console,
+    .terminal-label,
+    .topbar-status,
+    .rail-link .step,
+    .card-title .step,
+    .alert code,
+    #progress-label,
+    .file-meta,
+    .char-count,
+    .status-tag,
+    .panel-meta {
+      font-family: var(--font-mono);
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* UI layer — inherits var(--font-sans) from body */
+    .btn, .tab, .field input, .field select, .field textarea,
+    .tw-textarea, .seg-group button, .badge, .card-title,
+    .panel-title, .rail-link, .header-sub, .topbar h1 {
+      font-family: inherit;
+    }
+
+    ::selection {
+      background: rgba(242, 242, 244, 0.14);
+      color: var(--text);
+    }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font-sans);
+      font-size: 13px;
+      line-height: 1.55;
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .app {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Top bar ─────────────────────────────────────────────────────── */
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      height: var(--topbar-h);
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      padding: 0 24px;
+      background: rgba(7, 7, 8, 0.82);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .topbar .logo {
+      width: 30px;
+      height: 30px;
+      background: linear-gradient(145deg, rgba(62,207,142,.15), var(--surface));
+      border: 1px solid rgba(62, 207, 142, 0.35);
+      border-radius: var(--radius-sm);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: -0.04em;
+      color: var(--green);
+      flex-shrink: 0;
+      box-shadow: 0 0 16px rgba(62, 207, 142, 0.12);
+    }
+
+    .topbar h1 {
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: -0.02em;
+      line-height: 1;
+    }
+
+    .header-sub {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 400;
+      margin-top: 2px;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .topbar-status {
+      margin-left: auto;
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      padding: 4px 10px;
+      border-radius: 99px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      transition: color 200ms var(--ease-out), border-color 200ms var(--ease-out),
+                  box-shadow 200ms var(--ease-out), background 200ms var(--ease-out);
+    }
+    .topbar-status.is-running {
+      color: var(--amber);
+      border-color: rgba(232, 184, 74, 0.35);
+      background: rgba(232, 184, 74, 0.08);
+      box-shadow: 0 0 12px var(--amber-glow);
+    }
+    .topbar-status.is-done {
+      color: var(--green);
+      border-color: rgba(62, 207, 142, 0.35);
+      background: var(--green-tint);
+      box-shadow: 0 0 12px var(--green-glow);
+    }
+    .topbar-status.is-error {
+      color: var(--red);
+      border-color: rgba(240, 112, 112, 0.35);
+      background: var(--red-tint);
+    }
+
+    /* ── Shell layout ────────────────────────────────────────────────── */
+    .shell {
+      display: grid;
+      grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+      max-width: calc(var(--content-w) + var(--sidebar-w) + 48px);
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px 24px 80px;
+      gap: 32px;
+      align-items: start;
+    }
+
+    .rail {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .sidebar {
+      position: sticky;
+      top: calc(var(--topbar-h) + 20px);
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+      max-height: calc(100vh - var(--topbar-h) - 40px);
+      overflow-y: auto;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border-2) transparent;
+    }
+    .sidebar::-webkit-scrollbar { width: 4px; }
+    .sidebar::-webkit-scrollbar-thumb {
+      background: var(--border-2);
+      border-radius: 2px;
+    }
+
+    /* ── Pipeline flow (n8n-style) ───────────────────────────────────── */
+    .flow-diagram {
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+    }
+    .flow-header {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+    .flow-phase {
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      margin: 10px 0 6px;
+      padding-left: 2px;
+    }
+    .flow-phase:first-of-type { margin-top: 0; }
+
+    .flow-wire {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      height: 14px;
+      margin: 1px 0;
+    }
+    .flow-wire::before {
+      content: '';
+      width: 2px;
+      flex: 1;
+      background: linear-gradient(var(--border-2), var(--border));
+      border-radius: 1px;
+    }
+    .flow-wire::after {
+      content: '';
+      width: 0;
+      height: 0;
+      border-left: 4px solid transparent;
+      border-right: 4px solid transparent;
+      border-top: 5px solid var(--border-2);
+    }
+
+    .flow-node {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+      padding: 7px 9px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      text-decoration: none;
+      color: inherit;
+      cursor: pointer;
+      transition: border-color 150ms var(--ease-out), background 150ms var(--ease-out),
+                  box-shadow 150ms var(--ease-out), transform 120ms var(--ease-out);
+      position: relative;
+    }
+    .flow-node:hover {
+      border-color: var(--border-2);
+      background: var(--surface-2);
+    }
+    .flow-node:active { transform: scale(0.98); }
+    .flow-node.is-active {
+      border-color: rgba(62, 207, 142, 0.5);
+      background: var(--green-tint);
+      box-shadow: 0 0 0 1px rgba(62, 207, 142, 0.15);
+    }
+    .flow-node--fetch { border-left: 2px solid var(--sky); }
+    .flow-node--file { border-left: 2px solid #8b9cf6; }
+    .flow-node--ai   { border-left: 2px solid var(--amber); }
+    .flow-node--out  { border-left: 2px solid var(--green); }
+
+    .flow-node-icon {
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 9px;
+      color: var(--muted-2);
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .flow-node--fetch .flow-node-icon { color: var(--sky); border-color: rgba(110,181,255,.3); }
+    .flow-node--file  .flow-node-icon { color: #8b9cf6; border-color: rgba(139,156,246,.3); }
+    .flow-node--ai    .flow-node-icon { color: var(--amber); border-color: rgba(232,184,74,.3); }
+    .flow-node--out   .flow-node-icon { color: var(--green); border-color: rgba(62,207,142,.3); }
+
+    .flow-node-body {
+      display: flex;
+      flex-direction: column;
+      gap: 1px;
+      min-width: 0;
+    }
+    .flow-node-name {
+      font-size: 11px;
+      font-weight: 600;
+      line-height: 1.25;
+      color: var(--text);
+    }
+    .flow-node-io {
+      font-size: 9px;
+      color: var(--muted);
+      line-height: 1.3;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .flow-node.is-active .flow-node-name { color: var(--green); }
+
+    .rail-link {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 10px;
+      border-radius: var(--radius-sm);
+      color: var(--muted-2);
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 500;
+      transition: background 150ms var(--ease-out), color 150ms var(--ease-out),
+                  border-color 150ms var(--ease-out), box-shadow 150ms var(--ease-out);
+      border: 1px solid transparent;
+    }
+
+    .rail-link:hover {
+      color: var(--text);
+      background: var(--surface);
+    }
+
+    .rail-link.active {
+      color: var(--green);
+      background: var(--green-tint);
+      border-color: rgba(62, 207, 142, 0.25);
+      box-shadow: inset 3px 0 0 var(--green);
+    }
+
+    .rail-link.active .step { color: var(--green); }
+
+    .rail-link .step {
+      font-size: 10px;
+      color: var(--muted);
+      min-width: 16px;
+      transition: color 150ms var(--ease-out);
+    }
+
+    .main {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px 24px;
+      scroll-margin-top: calc(var(--topbar-h) + 16px);
+      position: relative;
+      overflow: hidden;
+    }
+    #sec-history {
+      overflow: visible;
+    }
+
+    .card::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--border-2);
+      transition: background 200ms var(--ease-out);
+    }
+
+    .card:target::before,
+    .card.is-active::before {
+      background: linear-gradient(180deg, var(--green), var(--green-dim));
+      box-shadow: 0 0 10px var(--green-glow);
+    }
+
+    .card-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--muted-2);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 0;
+      flex-shrink: 0;
+    }
+
+    .card-head {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      width: 100%;
+      padding: 0;
+      margin: 0 0 10px;
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: inherit;
+      text-align: left;
+      font-family: inherit;
+      border-radius: var(--radius-sm);
+      transition: background 150ms var(--ease-out);
+    }
+    .card-head:hover { background: rgba(255,255,255,.03); }
+    .card-head:focus-visible {
+      outline: 2px solid var(--border-2);
+      outline-offset: 2px;
+    }
+    .card.collapsed .card-head { margin-bottom: 0; }
+    .card.collapsed { padding: 12px 24px; }
+
+    .card-summary {
+      margin-left: auto;
+      font-size: 12px;
+      color: var(--muted-2);
+      font-weight: 400;
+      text-transform: none;
+      letter-spacing: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+      padding: 0 4px;
+    }
+
+    .card-chevron {
+      flex-shrink: 0;
+      width: 20px;
+      height: 20px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+      border-radius: 4px;
+      transition: transform 220ms var(--ease-out), color 150ms var(--ease-out);
+    }
+    .card-head:hover .card-chevron { color: var(--text); }
+    .card-chevron::before {
+      content: '';
+      display: block;
+      width: 6px;
+      height: 6px;
+      border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor;
+      transform: rotate(45deg) translateY(-1px);
+      transition: transform 220ms var(--ease-out);
+    }
+    .card.collapsed .card-chevron::before {
+      transform: rotate(-45deg) translateY(1px);
+    }
+
+    .card-body {
+      display: grid;
+      grid-template-rows: 1fr;
+      transition: grid-template-rows 260ms var(--ease-out), opacity 200ms var(--ease-out);
+    }
+    .card.collapsed .card-body {
+      grid-template-rows: 0fr;
+      opacity: 0;
+    }
+    .card-body-inner {
+      min-height: 0;
+      overflow: hidden;
+    }
+    #sec-history .card-body-inner {
+      overflow: visible;
+    }
+    #exports-list {
+      max-height: 420px;
+      overflow-y: auto;
+    }
+
+    .card-title .step {
+      font-size: 10px;
+      font-weight: 500;
+      color: var(--muted);
+      letter-spacing: 0;
+      min-width: 18px;
+    }
+
+    .card-desc {
+      color: var(--muted);
+      font-size: 12px;
+      margin: 0 0 16px;
+      line-height: 1.5;
+    }
+    .card.collapsed > .card-desc {
+      display: none;
+    }
+
+    .panel {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px 16px;
+    }
+
+    .panel-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      gap: 12px;
+    }
+
+    .panel-title {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text);
+    }
+
+    .panel-meta {
+      font-size: 11px;
+      color: var(--muted-2);
+      margin-left: 8px;
+      font-weight: 400;
+    }
+
+    .seg-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 6px;
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+
+    .alert {
+      border-radius: var(--radius);
+      padding: 10px 14px;
+      margin-bottom: 14px;
+      font-size: 11px;
+      line-height: 1.5;
+    }
+
+    .alert-warn {
+      background: rgba(251, 191, 36, 0.06);
+      border: 1px solid rgba(251, 191, 36, 0.22);
+      color: var(--yellow);
+    }
+
+    .alert code {
+      font-size: 10px;
+      background: rgba(0, 0, 0, 0.25);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+
+    .btn-sm {
+      font-size: 11px !important;
+      padding: 5px 12px !important;
+    }
+
+    /* Mode tabs */
+    .tabs {
+      display: flex;
+      gap: 2px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 3px;
+      margin-bottom: 18px;
+    }
+
+    .tab {
+      flex: 1;
+      padding: 9px 14px;
+      text-align: center;
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted-2);
+      line-height: 1.3;
+      transition: background 150ms var(--ease-out),
+                  color 150ms var(--ease-out),
+                  box-shadow 150ms var(--ease-out),
+                  transform 120ms var(--ease-out);
+      border: none;
+      background: transparent;
+      user-select: none;
+    }
+
+    .tab:hover:not(.active) { color: var(--sky); }
+
+    .tab:active { transform: scale(0.97); }
+
+    .tab.active {
+      background: var(--sky-tint);
+      color: var(--sky);
+      box-shadow: inset 0 0 0 1px rgba(110, 181, 255, 0.3),
+                  0 1px 4px rgba(110, 181, 255, 0.1);
+    }
+
+    /* Form elements */
+    .field { margin-bottom: 14px; }
+    .field label {
+      display: block;
+      font-size: 11px;
+      font-weight: 500;
+      color: var(--muted-2);
+      margin-bottom: 5px;
+      letter-spacing: 0.01em;
+    }
+
+    .field input, .field select, .field textarea {
+      width: 100%;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      padding: 7px 10px;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 150ms var(--ease-out), box-shadow 150ms var(--ease-out);
+    }
+
+    .field input:hover, .field select:hover, .field textarea:hover {
+      border-color: var(--border-2);
+    }
+
+    .field input:focus, .field select:focus, .field textarea:focus {
+      border-color: rgba(62, 207, 142, 0.5);
+      box-shadow: 0 0 0 3px rgba(62, 207, 142, 0.1);
+    }
+
+    .field select option { background: var(--surface); }
+
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .row3 { display: grid; grid-template-columns: 2fr 1.2fr 1.2fr; gap: 12px; }
+
+    /* Toggle */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 0;
+    }
+
+    .toggle {
+      position: relative;
+      width: 36px; height: 20px;
+      flex-shrink: 0;
+    }
+
+    .toggle input { opacity: 0; width: 0; height: 0; }
+
+    .toggle-track {
+      position: absolute; inset: 0;
+      background: var(--border-2);
+      border-radius: 10px;
+      cursor: pointer;
+      transition: background 200ms var(--ease-out),
+                  box-shadow 200ms var(--ease-out);
+    }
+
+    .toggle input:checked + .toggle-track {
+      background: linear-gradient(180deg, #4dd99a, var(--green-dim));
+      box-shadow: 0 0 14px var(--green-glow), inset 0 1px 0 rgba(255,255,255,.15);
+    }
+
+    .toggle-track::before {
+      content: '';
+      position: absolute;
+      width: 14px; height: 14px;
+      left: 3px; top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      box-shadow: 0 1px 3px rgba(0,0,0,.4);
+      transition: transform 220ms var(--ease-spring);
+    }
+
+    .toggle input:checked + .toggle-track::before {
+      transform: translateX(16px);
+    }
+
+    .toggle input:focus-visible + .toggle-track {
+      box-shadow: 0 0 0 3px rgba(62, 207, 142, 0.25);
+    }
+
+    /* ── Buttons ───────────────────────────────────────────────────────── */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      gap: 6px;
+      padding: 8px 16px;
+      border-radius: var(--radius);
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      /* Specific properties only — never `all` */
+      transition: background 150ms var(--ease-out),
+                  color 150ms var(--ease-out),
+                  border-color 150ms var(--ease-out),
+                  box-shadow 150ms var(--ease-out),
+                  transform 120ms var(--ease-out),
+                  opacity 150ms var(--ease-out);
+      /* Press feedback — every pressable element must feel responsive */
+      user-select: none;
+    }
+
+    .btn:active:not(:disabled) { transform: scale(0.97); }
+
+    .btn-primary {
+      background: linear-gradient(180deg, #4dd99a 0%, var(--green-dim) 100%);
+      color: #041a10;
+      box-shadow: 0 1px 2px rgba(0,0,0,.3),
+                  inset 0 1px 0 rgba(255,255,255,.22),
+                  0 0 0 1px rgba(62,207,142,.4);
+    }
+
+    .btn-primary:hover:not(:disabled) {
+      background: linear-gradient(180deg, #5ce4a8 0%, #38c98a 100%);
+      box-shadow: 0 4px 20px var(--green-glow),
+                  inset 0 1px 0 rgba(255,255,255,.28),
+                  0 0 0 1px rgba(62,207,142,.55);
+      transform: translateY(-1px);
+    }
+    .btn-primary:active:not(:disabled) {
+      transform: scale(0.97) translateY(0);
+      box-shadow: 0 1px 4px rgba(62,207,142,.2), inset 0 1px 0 rgba(255,255,255,.15);
+    }
+    .btn-primary:disabled { opacity: 0.35; cursor: not-allowed; }
+
+    .btn-danger {
+      background: transparent;
+      color: var(--red);
+      border: 1px solid rgba(240, 112, 112, 0.3);
+    }
+
+    .btn-danger:hover:not(:disabled) {
+      background: var(--red-tint);
+      border-color: rgba(240, 112, 112, 0.55);
+      box-shadow: 0 0 12px rgba(240, 112, 112, 0.15);
+    }
+
+    .btn-ghost {
+      background: transparent;
+      color: var(--muted-2);
+      border: 1px solid var(--border);
+    }
+
+    .btn-ghost:hover:not(:disabled) {
+      color: var(--text);
+      border-color: var(--border-2);
+      background: var(--surface-2);
+      box-shadow: 0 2px 8px rgba(0,0,0,.2);
+    }
+
+    /* Colored ghost variant for "Посты" in exports */
+    .btn-ghost.btn-accent:hover:not(:disabled) {
+      color: var(--green);
+      border-color: rgba(62, 207, 142, 0.4);
+      background: var(--green-tint);
+      box-shadow: 0 0 10px rgba(62, 207, 142, 0.12);
+    }
+    .btn-ghost:disabled   { opacity: 0.35; cursor: not-allowed; pointer-events: none; }
+
+    .actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      margin-top: 4px;
+    }
+
+    /* Log console — terminal chrome */
+    .terminal {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: var(--bg-2);
+    }
+
+    .terminal-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 12px;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .terminal-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .terminal-dot:nth-child(1) { background: #ff5f57; box-shadow: 0 0 6px rgba(255,95,87,.4); }
+    .terminal-dot:nth-child(2) { background: #febc2e; box-shadow: 0 0 6px rgba(254,188,46,.35); }
+    .terminal-dot:nth-child(3) { background: #28c840; box-shadow: 0 0 6px rgba(40,200,64,.35); }
+
+    .terminal-label {
+      margin-left: auto;
+      font-size: 10px;
+      color: var(--muted);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    #console {
+      padding: 14px 16px;
+      font-size: 11px;
+      line-height: 1.75;
+      min-height: 140px;
+      max-height: 300px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      word-break: break-all;
+      color: var(--muted-2);
+      scrollbar-width: thin;
+      scrollbar-color: var(--border-2) transparent;
+    }
+
+    #console::-webkit-scrollbar { width: 6px; }
+    #console::-webkit-scrollbar-thumb {
+      background: var(--border-2);
+      border-radius: 3px;
+    }
+    #console::-webkit-scrollbar-thumb:hover { background: var(--muted); }
+
+    .log-ok    { color: var(--green); }
+    .log-err   { color: var(--red); }
+    .log-warn  { color: var(--yellow); }
+    .log-info  { color: #8ab4f8; }
+
+    /* Progress bar */
+    #progress-wrap {
+      display: none;
+      margin: 10px 0 6px;
+    }
+
+    #progress-track {
+      background: var(--border);
+      border-radius: 99px;
+      height: 3px;
+      overflow: hidden;
+      width: 100%;
+    }
+
+    #progress-fill {
+      height: 100%;
+      border-radius: 99px;
+      transform: scaleX(0);
+      transform-origin: left;
+      background: linear-gradient(90deg, var(--green-dim), var(--green));
+      box-shadow: 0 0 8px var(--green-glow);
+      transition: transform 0.35s var(--ease-out);
+    }
+
+    /* Status badge */
+    .status-bar {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 10px;
+      min-height: 24px;
+    }
+
+    .badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 500;
+    }
+
+    .badge-idle    { background: var(--surface-2); color: var(--muted-2); }
+    .badge-running {
+      background: rgba(232, 184, 74, 0.1);
+      color: var(--amber);
+      border: 1px solid rgba(232, 184, 74, 0.3);
+      box-shadow: 0 0 10px var(--amber-glow);
+    }
+    .badge-ok {
+      background: var(--green-tint);
+      color: var(--green);
+      border: 1px solid rgba(62, 207, 142, 0.35);
+      box-shadow: 0 0 10px var(--green-glow);
+    }
+    .badge-error {
+      background: var(--red-tint);
+      color: var(--red);
+      border: 1px solid rgba(240, 112, 112, 0.35);
+    }
+
+    .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+    }
+
+    .dot.pulse {
+      animation: pulse 1.2s ease-in-out infinite;
+      box-shadow: 0 0 6px currentColor;
+    }
+
+    @keyframes pulse {
+      0%,100% { opacity: 1; }
+      50%      { opacity: .3; }
+    }
+
+    /* Indeterminate progress shimmer */
+    #progress-fill.indeterminate {
+      width: 30% !important;
+      animation: shimmer 1.4s ease-in-out infinite;
+    }
+    @keyframes shimmer {
+      0%   { transform: translateX(-120%); }
+      100% { transform: translateX(420%); }
+    }
+
+    /* Download row */
+    #download-row {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      margin-top: 10px;
+      padding: 10px 14px;
+      background: rgba(74,222,128,.05);
+      border: 1px solid rgba(74,222,128,.15);
+      border-radius: var(--radius);
+    }
+
+    #download-row .file-info { flex: 1; }
+    #download-row .file-name { font-weight: 500; color: var(--green); font-size: 14px; }
+    #download-row .file-size { font-size: 11px; color: var(--muted-2); margin-top: 2px; }
+
+    /* Exports list */
+    #exports-list { list-style: none; }
+    #exports-list .export-item {
+      border-bottom: 1px solid var(--border);
+      transition: background 120ms var(--ease-out);
+    }
+    #exports-list .export-item:last-child { border-bottom: none; }
+    #exports-list .export-item.expanded { background: var(--surface-2); }
+    #exports-list .export-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 8px;
+    }
+    #exports-list .export-row:hover { background: rgba(255,255,255,.02); }
+    #exports-list .file-name {
+      font-size: 13px;
+      font-weight: 500;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #exports-list .file-meta {
+      font-size: 11px;
+      color: var(--muted-2);
+      margin-top: 2px;
+    }
+    #exports-list .file-info { min-width: 0; flex: 1; overflow: hidden; }
+    #exports-list .file-actions {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .export-sources-panel {
+      padding: 0 8px 12px;
+    }
+    .export-sources-panel .panel {
+      margin-top: 4px;
+    }
+    .btn-analyze.active {
+      color: var(--sky);
+      border-color: rgba(110, 181, 255, 0.4);
+      background: var(--sky-tint);
+    }
+
+    .hidden { display: none !important; }
+
+    hr.divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 16px 0;
+    }
+
+    /* Twitter draft cards */
+    .tw-draft-card {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 14px;
+      margin-bottom: 8px;
+      transition: border-color 150ms var(--ease-out), opacity 150ms var(--ease-out);
+    }
+    .tw-draft-card:hover { border-color: var(--border-2); }
+
+    .tw-post-unit {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 10px 12px;
+      margin-top: 8px;
+      transition: border-color 150ms var(--ease-out), opacity 150ms var(--ease-out);
+    }
+    .tw-post-unit:first-of-type { margin-top: 0; }
+    .tw-post-unit:not(.is-checked) { opacity: 0.45; }
+    .tw-post-unit.is-checked { border-color: rgba(110, 181, 255, 0.35); }
+
+    .tw-post-unit-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+    .tw-post-unit-select {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      cursor: pointer;
+      min-width: 0;
+      flex: 1;
+    }
+    .tw-post-platform {
+      font-size: 11px;
+      padding: 3px 8px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--muted-2);
+      cursor: pointer;
+    }
+    .tw-post-result {
+      margin-top: 8px;
+      font-size: 11px;
+    }
+
+    .tw-refine-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      padding: 10px 12px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+    .tw-refine-label {
+      font-size: 11px;
+      color: var(--muted-2);
+      margin-right: 4px;
+    }
+    .tw-refine-spacer {
+      flex: 1;
+      min-width: 8px;
+    }
+
+    .draft-meta {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 8px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .draft-lang-label {
+      font-size: 10px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+      font-weight: 500;
+    }
+
+    .char-count {
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .char-count.over { color: var(--red); font-weight: 500; }
+
+    .topic-chip {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 12px;
+      background: var(--surface-2);
+      border-radius: var(--radius-sm);
+      cursor: pointer;
+      border: 1px solid var(--border);
+      transition: border-color 150ms var(--ease-out), background 150ms var(--ease-out);
+    }
+    .topic-chip:hover { border-color: var(--border-2); }
+    .topic-chip:has(input:checked) {
+      border-color: rgba(62, 207, 142, 0.35);
+      background: var(--green-tint);
+      box-shadow: inset 0 0 0 1px rgba(62, 207, 142, 0.15);
+    }
+
+    .radar-toolbar {
+      display: flex;
+      align-items: flex-end;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    .radar-toolbar .field { margin-bottom: 0; flex: 0 0 auto; }
+    .radar-toolbar .field label { font-size: 10px; }
+    .radar-toolbar .field input { width: 72px; }
+    .radar-empty {
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+      padding: 8px 0 4px;
+    }
+    .radar-status {
+      font-size: 11px;
+      color: var(--muted-2);
+      padding: 6px 0;
+    }
+    .radar-status.is-loading { color: var(--amber); }
+    .radar-status.is-error { color: var(--red); }
+
+    .source-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 4px;
+      cursor: pointer;
+      border-radius: var(--radius-sm);
+      transition: background 120ms var(--ease-out);
+    }
+    .source-row:hover { background: var(--surface-2); }
+
+    .source-chips-bar {
+      margin-bottom: 12px;
+    }
+    .source-chips-label {
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .source-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .source-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px 5px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(110, 181, 255, 0.35);
+      background: var(--sky-tint);
+      color: var(--text);
+      font-size: 12px;
+      line-height: 1.3;
+      max-width: min(100%, 320px);
+    }
+    .source-chip-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .source-chip-count {
+      font-size: 10px;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .source-chip-remove {
+      border: none;
+      background: none;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0 2px;
+      font-size: 15px;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .source-chip-remove:hover { color: var(--text); }
+
+    .export-sources-actions {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border);
+    }
+    .exp-src-panel-head {
+      cursor: pointer;
+      user-select: none;
+    }
+    .exp-src-panel-head .btn { cursor: pointer; }
+    .exp-src-chevron {
+      flex-shrink: 0;
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: var(--muted);
+    }
+    .exp-src-chevron::before {
+      content: '';
+      display: block;
+      width: 5px;
+      height: 5px;
+      border-right: 1.5px solid currentColor;
+      border-bottom: 1.5px solid currentColor;
+      transform: rotate(45deg) translateY(-1px);
+      transition: transform 220ms var(--ease-out);
+    }
+    .exp-src-panel-inner.list-collapsed .exp-src-chevron::before {
+      transform: rotate(-45deg) translateY(1px);
+    }
+    .exp-src-collapsible {
+      display: grid;
+      grid-template-rows: 1fr;
+      transition: grid-template-rows 240ms var(--ease-out), opacity 180ms var(--ease-out);
+    }
+    .exp-src-panel-inner.list-collapsed .exp-src-collapsible {
+      grid-template-rows: 0fr;
+      opacity: 0;
+    }
+    .exp-src-collapsible-inner {
+      min-height: 0;
+      overflow: hidden;
+    }
+    .exp-src-list {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      max-height: 240px;
+      overflow-y: auto;
+    }
+
+    .queue-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .queue-item:last-child { border-bottom: none; }
+
+    .status-tag {
+      font-size: 10px;
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    .status-tag.pending { color: var(--muted-2); }
+    .status-tag.posted  { color: var(--green); }
+    .status-tag.error   { color: var(--red); }
+
+    .tw-textarea {
+      width: 100%;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.55;
+      padding: 8px 10px;
+      resize: vertical;
+      min-height: 80px;
+      outline: none;
+      transition: border-color 150ms var(--ease-out), box-shadow 150ms var(--ease-out);
+    }
+    .tw-textarea:hover { border-color: var(--border-2); }
+    .tw-textarea:focus {
+      border-color: rgba(62, 207, 142, 0.45);
+      box-shadow: 0 0 0 3px rgba(62, 207, 142, 0.08);
+    }
+
+    /* ── Segment controls ─────────────────────────────────────────────── */
+    .seg-group {
+      display: inline-flex;
+      gap: 2px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      padding: 3px;
+    }
+
+    /* All seg buttons share one base class; keep per-group marker classes for JS targeting */
+    .num-btn, .ai-btn, .plat-btn, .lang-btn, .pub-mode-btn, .persona-btn {
+      padding: 6px 14px;
+      border-radius: 5px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--muted-2);
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      transition: background 150ms var(--ease-out),
+                  color 150ms var(--ease-out),
+                  box-shadow 150ms var(--ease-out),
+                  transform 120ms var(--ease-out);
+      white-space: nowrap;
+      line-height: 1.4;
+      user-select: none;
+    }
+
+    .num-btn:hover, .ai-btn:hover, .plat-btn:hover,
+    .lang-btn:hover, .pub-mode-btn:hover, .persona-btn:hover { color: var(--accent); }
+
+    .num-btn:active, .ai-btn:active, .plat-btn:active,
+    .lang-btn:active, .pub-mode-btn:active, .persona-btn:active { transform: scale(0.95); }
+
+    .num-btn.active-num,
+    .ai-btn.active-ai,
+    .plat-btn.active-plat,
+    .lang-btn.active-lang,
+    .pub-mode-btn.active-pub {
+      background: var(--green-tint);
+      color: var(--green);
+      box-shadow: inset 0 0 0 1px rgba(62, 207, 142, 0.35),
+                  0 1px 4px rgba(62, 207, 142, 0.12);
+    }
+
+    .persona-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }
+    .persona-btn {
+      padding: 6px 12px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--muted-2);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      cursor: pointer;
+      transition: background 150ms var(--ease-out), color 150ms var(--ease-out),
+                  border-color 150ms var(--ease-out), transform 120ms var(--ease-out);
+      white-space: nowrap;
+      line-height: 1.4;
+      user-select: none;
+    }
+    .persona-btn:hover { color: var(--accent); border-color: var(--border-2); }
+    .persona-btn:active { transform: scale(0.95); }
+    .persona-btn.active-persona {
+      background: var(--sky-tint);
+      color: var(--sky);
+      border-color: rgba(110, 181, 255, 0.45);
+      box-shadow: 0 1px 4px rgba(110, 181, 255, 0.1);
+    }
+    .persona-desc {
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--muted);
+      line-height: 1.45;
+      min-height: 1.45em;
+    }
+
+    .plat-btn.active-plat {
+      background: var(--sky-tint);
+      color: var(--sky);
+      box-shadow: inset 0 0 0 1px rgba(110, 181, 255, 0.35),
+                  0 1px 4px rgba(110, 181, 255, 0.1);
+    }
+
+    .ai-btn.active-ai {
+      background: rgba(232, 184, 74, 0.12);
+      color: var(--amber);
+      box-shadow: inset 0 0 0 1px rgba(232, 184, 74, 0.35),
+                  0 1px 4px rgba(232, 184, 74, 0.1);
+    }
+
+    /* ── Custom checkbox ───────────────────────────────────────────────── */
+    input[type="checkbox"] {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      border: 1px solid var(--border-2);
+      border-radius: 3px;
+      background: var(--bg);
+      cursor: pointer;
+      position: relative;
+      flex-shrink: 0;
+      transition: background 120ms, border-color 120ms;
+      vertical-align: middle;
+    }
+    input[type="checkbox"]:hover { border-color: var(--muted-2); }
+    input[type="checkbox"]:checked {
+      background: linear-gradient(180deg, #4dd99a, var(--green-dim));
+      border-color: var(--green-dim);
+      box-shadow: 0 0 8px var(--green-glow);
+    }
+    input[type="checkbox"]:checked::after {
+      content: '';
+      position: absolute;
+      left: 3px;
+      top: 1px;
+      width: 5px;
+      height: 8px;
+      border: 1.5px solid #0a0a0a;
+      border-top: none;
+      border-left: none;
+      transform: rotate(42deg);
+    }
+
+    /* ── Focus rings ───────────────────────────────────────────────────── */
+    .tab:focus-visible,
+    .btn:focus-visible,
+    .num-btn:focus-visible, .ai-btn:focus-visible, .plat-btn:focus-visible,
+    .lang-btn:focus-visible, .pub-mode-btn:focus-visible {
+      outline: 2px solid var(--border-2);
+      outline-offset: 2px;
+    }
+    input:focus-visible, select:focus-visible, textarea:focus-visible {
+      outline: none;
+      border-color: var(--muted-2);
+    }
+
+    /* ── Translate button ──────────────────────────────────────────────── */
+    .btn-translate {
+      flex-shrink: 0;
+      font-size: 11px;
+      padding: 3px 9px;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      color: var(--muted-2);
+      cursor: pointer;
+      font-weight: 500;
+      transition: border-color 150ms var(--ease-out),
+                  color 150ms var(--ease-out),
+                  transform 120ms var(--ease-out);
+      line-height: 1.4;
+      user-select: none;
+    }
+    .btn-translate:hover  { color: var(--sky); border-color: rgba(110, 181, 255, 0.4); background: var(--sky-tint); }
+    .btn-translate:active { transform: scale(0.95); }
+    .btn-translate.translated { color: var(--green); border-color: rgba(62, 207, 142, 0.45); background: var(--green-tint); }
+
+    /* ── Range sliders — custom track + thumb ─────────────────────────── */
+    /* Background fill is driven by JS (updateRangeFill) to show progress */
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      height: 4px;
+      border-radius: 2px;
+      /* initial fill set by JS on DOMContentLoaded */
+      background: linear-gradient(to right, var(--green) 50%, var(--border-2) 50%);
+      outline: none;
+      cursor: pointer;
+      padding: 0;
+      border: none;
+      margin: 6px 0;
+    }
+
+    /* Webkit thumb */
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--green);
+      border: 2px solid var(--bg);
+      box-shadow: 0 0 0 1px var(--green-dim), 0 0 10px var(--green-glow);
+      transition: transform 120ms var(--ease-out), box-shadow 120ms var(--ease-out);
+      cursor: pointer;
+    }
+
+    input[type="range"]::-webkit-slider-thumb:hover {
+      transform: scale(1.2);
+      box-shadow: 0 0 0 1px var(--green), 0 0 14px var(--green-glow);
+    }
+
+    input[type="range"]::-webkit-slider-thumb:active {
+      transform: scale(1.05);
+      box-shadow: 0 0 0 4px rgba(62, 207, 142, 0.2), 0 0 12px var(--green-glow);
+    }
+
+    /* Firefox thumb */
+    input[type="range"]::-moz-range-thumb {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--green);
+      border: 2px solid var(--bg);
+      box-shadow: 0 0 0 1px var(--green-dim), 0 0 10px var(--green-glow);
+      cursor: pointer;
+    }
+
+    /* Firefox filled track */
+    input[type="range"]::-moz-range-progress {
+      background: var(--green);
+      height: 4px;
+      border-radius: 2px 0 0 2px;
+    }
+
+    #tw-topics-list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    /* Export grid — search + settings side by side on wide */
+    .export-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+    }
+
+    .export-grid .sub-block {
+      padding: 16px;
+      background: var(--bg-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+    }
+
+    .sub-block-title {
+      font-size: 10px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.07em;
+      color: var(--muted);
+      margin-bottom: 14px;
+    }
+
+    @media (max-width: 900px) {
+      .shell {
+        grid-template-columns: 1fr;
+        padding: 16px 16px 64px;
+        gap: 16px;
+      }
+      .rail {
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+      .sidebar {
+        position: static;
+        max-height: none;
+        overflow: visible;
+      }
+      .flow-diagram { display: none; }
+      .rail-link { font-size: 11px; padding: 6px 10px; }
+      .export-grid { grid-template-columns: 1fr; }
+      .topbar-status { display: none; }
+    }
+
+    /* ── Reduced motion ────────────────────────────────────────────────── */
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
+    }
+  </style>
+</head>
+<body>
+
+<div class="app">
+  <header class="topbar">
+    <div class="logo">FE</div>
+    <div>
+      <h1>Factiva Exporter</h1>
+      <p class="header-sub">Export · Generate · Publish</p>
+    </div>
+    <div class="topbar-status" id="topbar-status">ready</div>
+  </header>
+
+  <div class="shell">
+    <aside class="sidebar" aria-label="Навигация и архитектура">
+      <nav class="rail" aria-label="Pipeline">
+        <a class="rail-link active" href="#sec-search"><span class="step">01</span> Поиск</a>
+        <a class="rail-link" href="#sec-export"><span class="step">02</span> Экспорт</a>
+        <a class="rail-link" href="#sec-progress"><span class="step">03</span> Прогресс</a>
+        <a class="rail-link" href="#sec-history"><span class="step">04</span> История</a>
+        <a class="rail-link" href="#sec-publish"><span class="step">05</span> Публикация</a>
+      </nav>
+
+      <div class="flow-diagram" aria-label="Архитектура пайплайна">
+        <div class="flow-header">Пайплайн</div>
+
+        <div class="flow-phase">Экспорт</div>
+        <a class="flow-node flow-node--fetch" href="#sec-search" data-flow="sec-search">
+          <span class="flow-node-icon">⌕</span>
+          <span class="flow-node-body">
+            <span class="flow-node-name">Поиск</span>
+            <span class="flow-node-io">запрос Factiva</span>
+          </span>
+        </a>
+        <div class="flow-wire" aria-hidden="true"></div>
+        <a class="flow-node flow-node--fetch" href="#sec-export" data-flow="sec-export">
+          <span class="flow-node-icon">⬇</span>
+          <span class="flow-node-body">
+            <span class="flow-node-name">Скрапер</span>
+            <span class="flow-node-io">статьи с сайта</span>
+          </span>
+        </a>
+        <div class="flow-wire" aria-hidden="true"></div>
+        <a class="flow-node flow-node--fetch" href="#sec-progress" data-flow="sec-progress">
+          <span class="flow-node-icon">◉</span>
+          <span class="flow-node-body">
+            <span class="flow-node-name">Монитор</span>
+            <span class="flow-node-io">прогресс выгрузки</span>
+          </span>
+        </a>
+        <div class="flow-wire" aria-hidden="true"></div>
+        <a class="flow-node flow-node--file" href="#sec-history" data-flow="sec-history">
+          <span class="flow-node-icon">▤</span>
+          <span class="flow-node-body">
+            <span class="flow-node-name">Сборщик</span>
+            <span class="flow-node-io">пачка → RTF</span>
+          </span>
+        </a>
+        <div class="flow-wire" aria-hidden="true"></div>
+        <a class="flow-node flow-node--file" href="#flow-filter" data-flow="flow-filter">
+          <span class="flow-node-icon">⊘</span>
+          <span class="flow-node-body">
+            <span class="flow-node-name">Фильтр источников</span>
+            <span class="flow-node-io">RTF → отбор</span>
+          </span>
+        </a>
+
+        <div class="flow-phase">Контент</div>
+        <a class="flow-node flow-node--file" href="#flow-parse" data-flow="flow-parse">
+          <span class="flow-node-icon">◫</span>
+          <span class="flow-node-body">
+            <span class="flow-node-name">Парсер</span>
+            <span class="flow-node-io">RTF → статьи</span>
+          </span>
+        </a>
+        <div class="flow-wire" aria-hidden="true"></div>
+        <a class="flow-node flow-node--ai" href="#flow-topics" data-flow="flow-topics">
+          <span class="flow-node-icon">◎</span>
+          <span class="flow-node-body">
+            <span class="flow-node-name">Радар тем</span>
+            <span class="flow-node-io">кластеризация</span>
+          </span>
+        </a>
+        <div class="flow-wire" aria-hidden="true"></div>
+        <a class="flow-node flow-node--ai" href="#flow-author" data-flow="flow-author">
+          <span class="flow-node-icon">✎</span>
+          <span class="flow-node-body">
+            <span class="flow-node-name">Автор</span>
+            <span class="flow-node-io">черновики + персонаж</span>
+          </span>
+        </a>
+        <div class="flow-wire" aria-hidden="true"></div>
+        <a class="flow-node flow-node--ai" href="#flow-refine" data-flow="flow-refine">
+          <span class="flow-node-icon">⚙</span>
+          <span class="flow-node-body">
+            <span class="flow-node-name">Цех</span>
+            <span class="flow-node-io">доработка постов</span>
+          </span>
+        </a>
+        <div class="flow-wire" aria-hidden="true"></div>
+        <a class="flow-node flow-node--ai" href="#flow-translate" data-flow="flow-translate">
+          <span class="flow-node-icon">⇄</span>
+          <span class="flow-node-body">
+            <span class="flow-node-name">Локатор</span>
+            <span class="flow-node-io">перевод EN ↔ RU</span>
+          </span>
+        </a>
+        <div class="flow-wire" aria-hidden="true"></div>
+        <a class="flow-node flow-node--out" href="#flow-dispatch" data-flow="flow-dispatch">
+          <span class="flow-node-icon">▶</span>
+          <span class="flow-node-body">
+            <span class="flow-node-name">Диспетчер</span>
+            <span class="flow-node-io">Twitter · Telegram</span>
+          </span>
+        </a>
+      </div>
+    </aside>
+
+    <div class="main">
+
+<!-- Search config -->
+<div class="card is-active" id="sec-search">
+  <button type="button" class="card-head" onclick="toggleCard('sec-search')" aria-expanded="true">
+    <div class="card-title"><span class="step">01</span> Параметры поиска</div>
+    <span class="card-summary" id="sum-sec-search"></span>
+    <span class="card-chevron" aria-hidden="true"></span>
+  </button>
+  <div class="card-body">
+  <div class="card-body-inner">
+
+  <div class="tabs">
+    <button class="tab active" onclick="setMode('search')" id="tab-search">Сохранённый поиск</button>
+    <button class="tab"        onclick="setMode('query')"  id="tab-query">Произвольный запрос</button>
+  </div>
+
+  <!-- Saved search -->
+  <div id="panel-search">
+    <div class="field">
+      <label>Название сохранённого поиска</label>
+      <input id="saved-search" type="text" placeholder="Например: AI, Artificial Intelligence, Brasil…" value="AI" oninput="autoFillName(this.value)">
+    </div>
+  </div>
+
+  <!-- Custom query -->
+  <div id="panel-query" class="hidden">
+    <div class="field">
+      <label>Текст запроса</label>
+      <input id="query-text" type="text" placeholder="Например: artificial intelligence OR machine learning" oninput="autoFillName(this.value)">
+    </div>
+
+    <div class="row">
+      <div class="field">
+        <label>Период</label>
+        <select id="date-preset" onchange="onDateChange()">
+          <option value="today">Сегодня</option>
+          <option value="week" selected>Последние 7 дней</option>
+          <option value="month">Последние 30 дней</option>
+          <option value="3months">Последние 3 месяца</option>
+          <option value="6months">Последние 6 месяцев</option>
+          <option value="year">Последний год</option>
+          <option value="all">Все даты</option>
+          <option value="custom">Произвольный диапазон…</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>Источник (необязательно)</label>
+        <input id="source" type="text" placeholder="The Wall Street Journal, Reuters…" title="Точное название издания — добавляется в запрос как rst=(&quot;название&quot;)">
+      </div>
+    </div>
+
+    <!-- Custom date range -->
+    <div class="row hidden" id="custom-date-row">
+      <div class="field">
+        <label>Дата с (YYYY-MM-DD)</label>
+        <input id="date-from" type="date">
+      </div>
+      <div class="field">
+        <label>Дата по (YYYY-MM-DD)</label>
+        <input id="date-to" type="date">
+      </div>
+    </div>
+  </div>
+  </div>
+  </div>
+</div>
+
+<!-- Output settings -->
+<div class="card" id="sec-export">
+  <button type="button" class="card-head" onclick="toggleCard('sec-export')" aria-expanded="true">
+    <div class="card-title"><span class="step">02</span> Настройки экспорта</div>
+    <span class="card-summary" id="sum-sec-export"></span>
+    <span class="card-chevron" aria-hidden="true"></span>
+  </button>
+  <div class="card-body">
+  <div class="card-body-inner">
+
+  <div class="field">
+    <label>Имя файла (.rtf)</label>
+    <input id="out-name" type="text" value="factiva_export" placeholder="factiva_export">
+  </div>
+  <div class="row">
+    <div class="field">
+      <label>Лимит страниц (0 = все)</label>
+      <input id="max-pages" type="number" value="0" min="0" max="500">
+    </div>
+    <!-- headless is always true on server, toggle removed -->
+    <div class="field toggle-row" style="padding-top: 22px;">
+      <label class="toggle">
+        <input type="checkbox" id="dedup" checked>
+        <div class="toggle-track"></div>
+      </label>
+      <span style="font-size: 14px">Без дублей</span>
+    </div>
+  </div>
+
+  <hr class="divider">
+
+  <div class="actions">
+    <button class="btn btn-primary" id="btn-run" onclick="runJob()">
+      Запустить
+    </button>
+    <button class="btn btn-danger hidden" id="btn-stop" onclick="stopJob()">
+      Остановить
+    </button>
+  </div>
+  </div>
+  </div>
+</div>
+
+<!-- Progress -->
+<div class="card" id="sec-progress">
+  <button type="button" class="card-head" onclick="toggleCard('sec-progress')" aria-expanded="true">
+    <div class="card-title"><span class="step">03</span> Прогресс</div>
+    <span class="card-summary" id="sum-sec-progress"></span>
+    <span class="card-chevron" aria-hidden="true"></span>
+  </button>
+  <div class="card-body">
+  <div class="card-body-inner">
+
+  <div class="status-bar">
+    <div class="badge badge-idle" id="status-badge">
+      <div class="dot"></div>
+      <span id="status-text">Ожидание</span>
+    </div>
+    <span id="progress-label" style="font-size:11px;color:var(--muted);margin-left:auto;margin-right:12px;"></span>
+    <button class="btn btn-ghost btn-sm" onclick="clearConsole()">Очистить</button>
+  </div>
+
+  <div id="progress-wrap">
+    <div id="progress-track">
+      <div id="progress-fill"></div>
+    </div>
+  </div>
+
+  <div class="terminal">
+    <div class="terminal-bar">
+      <span class="terminal-dot"></span>
+      <span class="terminal-dot"></span>
+      <span class="terminal-dot"></span>
+      <span class="terminal-label">factiva-agent</span>
+    </div>
+    <div id="console">Нажмите «Запустить» чтобы начать выгрузку…</div>
+  </div>
+
+  <div id="download-row">
+    <div class="file-info">
+      <div class="file-name" id="dl-name"></div>
+      <div class="file-size" id="dl-size"></div>
+    </div>
+    <a class="btn btn-ghost btn-sm" id="dl-link" href="#">Скачать RTF</a>
+  </div>
+  </div>
+  </div>
+</div>
+
+<!-- Previous exports -->
+<div class="card collapsed" id="sec-history">
+  <button type="button" class="card-head" onclick="toggleCard('sec-history')" aria-expanded="false">
+    <div class="card-title"><span class="step">04</span> Прошлые выгрузки</div>
+    <span class="card-summary" id="sum-sec-history"></span>
+    <span class="card-chevron" aria-hidden="true"></span>
+  </button>
+  <div class="card-body">
+  <div class="card-body-inner">
+  <ul id="exports-list">
+    <li style="color:var(--muted);font-size: 14px">Загрузка…</li>
+  </ul>
+  </div>
+  </div>
+</div>
+
+<!-- Twitter poster -->
+<div class="card" id="sec-publish">
+  <button type="button" class="card-head" onclick="toggleCard('sec-publish')" aria-expanded="true">
+    <div class="card-title"><span class="step">05</span> Публикация</div>
+    <span class="card-summary" id="sum-sec-publish"></span>
+    <span class="card-chevron" aria-hidden="true"></span>
+  </button>
+  <p class="card-desc">Выберите RTF → сгенерируйте черновики → отредактируйте → опубликуйте</p>
+  <div class="card-body">
+  <div class="card-body-inner">
+
+  <div id="tw-key-warn" class="alert alert-warn" style="display:none">
+    Не хватает ключей в <code>.env</code>: <span id="tw-missing-keys"></span>
+  </div>
+  <div id="tw-anthropic-warn" class="alert alert-warn" style="display:none">
+    Не задан <code>ANTHROPIC_API_KEY</code> — генерация постов недоступна
+  </div>
+
+  <div style="display:flex;gap:20px;margin-bottom:14px;flex-wrap:wrap;align-items:flex-end">
+    <div>
+      <div class="seg-label">Платформа</div>
+      <div class="seg-group">
+        <button id="plat-twitter"  onclick="setPlatform('twitter')"  class="plat-btn active-plat">Twitter</button>
+        <button id="plat-telegram" onclick="setPlatform('telegram')" class="plat-btn">Telegram</button>
+        <button id="plat-both"     onclick="setPlatform('both')"     class="plat-btn">Оба</button>
+      </div>
+    </div>
+    <div>
+      <div class="seg-label">AI модель</div>
+      <div class="seg-group">
+        <button id="ai-claude" onclick="setAiModel('claude')" class="ai-btn active-ai">Claude</button>
+        <button id="ai-gpt"    onclick="setAiModel('gpt')"    class="ai-btn">ChatGPT</button>
+      </div>
+    </div>
+    <div>
+      <div class="seg-label">Язык</div>
+      <div class="seg-group">
+        <button id="lang-en" onclick="setLang('en')" class="lang-btn active-lang">EN</button>
+        <button id="lang-ru" onclick="setLang('ru')" class="lang-btn">RU</button>
+        <button id="lang-ua" onclick="setLang('ua')" class="lang-btn">UA</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="flow-parse" style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap;margin-bottom:12px;scroll-margin-top:calc(var(--topbar-h) + 16px)">
+    <div class="field" style="flex:1;min-width:200px;margin-bottom:0">
+      <label>RTF-файл</label>
+      <select id="tw-file-select" style="width:100%" onchange="onFileChange()">
+        <option value="">— выберите файл —</option>
+      </select>
+    </div>
+    <div class="field" style="width:90px;margin-bottom:0">
+      <label>Макс. статей</label>
+      <input id="tw-max" type="number" value="20" min="1" max="200" style="width:100%">
+    </div>
+    <button class="btn btn-primary" id="tw-btn-gen" onclick="generateDrafts()" style="height:38px;white-space:nowrap">
+      Сгенерировать
+    </button>
+  </div>
+
+  <div id="flow-filter" style="scroll-margin-top:calc(var(--topbar-h) + 16px)">
+  <div id="tw-source-chips-bar" class="source-chips-bar" style="display:none">
+    <div class="source-chips-label">Источники для генерации</div>
+    <div id="tw-source-chips" class="source-chips"></div>
+  </div>
+
+  <div id="tw-sources-wrap" style="display:none;margin-bottom:12px">
+    <div class="panel exp-src-panel-inner" id="tw-sources-panel-inner">
+      <div class="panel-head exp-src-panel-head" onclick="togglePublishSourcesList()" style="cursor:pointer">
+        <div>
+          <span class="panel-title">Источники</span>
+          <span class="panel-meta">
+            <span id="tw-sources-count">0</span> / <span id="tw-sources-total">0</span> статей
+          </span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button type="button" class="btn btn-ghost btn-sm" onclick="event.stopPropagation();selectAllSources(true)">Все</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="event.stopPropagation();selectAllSources(false)">Снять</button>
+          <span class="exp-src-chevron" aria-hidden="true"></span>
+        </div>
+      </div>
+      <div class="exp-src-collapsible">
+        <div class="exp-src-collapsible-inner">
+          <div id="tw-sources-list" class="exp-src-list"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div>
+
+  <div id="flow-topics" style="scroll-margin-top:calc(var(--topbar-h) + 16px)">
+  <div id="tw-topics-wrap" style="display:none;margin-bottom:14px">
+    <div class="panel exp-src-panel-inner" id="tw-topics-panel-inner">
+      <div class="panel-head exp-src-panel-head" onclick="toggleTopicsPanel()" style="cursor:pointer">
+        <div>
+          <span class="panel-title">Радар тем</span>
+          <span class="panel-meta" id="tw-topics-meta">не запущен</span>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center">
+          <button type="button" class="btn btn-ghost btn-sm" onclick="event.stopPropagation();selectAllTopics(true)">Все</button>
+          <button type="button" class="btn btn-ghost btn-sm" onclick="event.stopPropagation();selectAllTopics(false)">Снять</button>
+          <span class="exp-src-chevron" aria-hidden="true"></span>
+        </div>
+      </div>
+      <div class="exp-src-collapsible">
+        <div class="exp-src-collapsible-inner">
+          <div class="radar-toolbar">
+            <div class="field">
+              <label>Кластеров</label>
+              <input id="tw-max-topics" type="number" value="15" min="3" max="50">
+            </div>
+            <button type="button" class="btn btn-primary btn-sm" id="tw-btn-radar" onclick="runTopicRadar()" disabled>
+              Сканировать
+            </button>
+          </div>
+          <div id="tw-topics-empty" class="radar-empty">
+            Группирует заголовки в темы. Учитывает фильтр источников — сначала отберите источники, затем нажмите «Сканировать».
+          </div>
+          <div id="tw-topics-status" class="radar-status" style="display:none"></div>
+          <div id="tw-topics-list"></div>
+          <div id="tw-topics-footer" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:none;align-items:center;gap:10px">
+            <span style="font-size: 11px;color:var(--muted-2)">Выбрано статей:</span>
+            <span id="tw-selected-count" style="font-size: 14px;font-weight:600">0</span>
+            <span style="font-size: 11px;color:var(--muted-2)">из</span>
+            <span id="tw-total-count" style="font-size: 14px;font-weight:600">0</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  </div>
+
+  <!-- Post settings -->
+  <div id="flow-author" class="panel" style="margin-bottom:4px;scroll-margin-top:calc(var(--topbar-h) + 16px)">
+    <div class="seg-label" style="margin-bottom:12px">Настройки постов</div>
+
+    <div style="margin-bottom:16px">
+      <label class="seg-label">Персонаж</label>
+      <div class="persona-group" id="tw-persona-group">
+        <button type="button" id="persona-neutral" onclick="setPersona('neutral')" class="persona-btn active-persona">Нейтральный</button>
+        <button type="button" id="persona-smirnov" onclick="setPersona('smirnov')" class="persona-btn">Смирнов</button>
+        <button type="button" id="persona-baza" onclick="setPersona('baza')" class="persona-btn">База</button>
+        <button type="button" id="persona-aristarh" onclick="setPersona('aristarh')" class="persona-btn">Аристарх</button>
+        <button type="button" id="persona-jora" onclick="setPersona('jora')" class="persona-btn">Жора</button>
+        <button type="button" id="persona-tyler" onclick="setPersona('tyler')" class="persona-btn">Тайлер</button>
+      </div>
+      <div id="persona-desc" class="persona-desc">Как сейчас — Cinico, циничный аналитический голос с настройками ниже.</div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+
+      <!-- Cynicism -->
+      <div>
+        <label style="font-size: 11px;color:var(--muted);display:flex;justify-content:space-between">
+          Цинизм <span id="lbl-cynicism">5</span>/10
+        </label>
+        <input type="range" id="tw-cynicism" min="1" max="10" value="5"
+          oninput="document.getElementById('lbl-cynicism').textContent=this.value"
+          style="width:100%">
+        <div style="display:flex;justify-content:space-between;font-size: 11px;color:var(--muted)">
+          <span>Нейтрально</span><span>Максимум</span>
+        </div>
+      </div>
+
+      <!-- Harshness -->
+      <div>
+        <label style="font-size: 11px;color:var(--muted);display:flex;justify-content:space-between">
+          Жёсткость <span id="lbl-harsh">5</span>/10
+        </label>
+        <input type="range" id="tw-harsh" min="1" max="10" value="5"
+          oninput="document.getElementById('lbl-harsh').textContent=this.value"
+          style="width:100%">
+        <div style="display:flex;justify-content:space-between;font-size: 11px;color:var(--muted)">
+          <span>Мягко</span><span>Беспощадно</span>
+        </div>
+      </div>
+
+      <!-- Length -->
+      <div>
+        <label style="font-size: 11px;color:var(--muted);display:flex;justify-content:space-between">
+          Длина поста <span id="lbl-length">короткий</span>
+        </label>
+        <input type="range" id="tw-length" min="1" max="5" value="2"
+          oninput="document.getElementById('lbl-length').textContent=['мини','короткий','средний','длинный','полный контекст'][this.value-1]"
+          style="width:100%">
+        <div style="display:flex;justify-content:space-between;font-size: 11px;color:var(--muted)">
+          <span>мини</span><span>полный контекст</span>
+        </div>
+      </div>
+
+      <!-- Depth -->
+      <div>
+        <label style="font-size: 11px;color:var(--muted);display:flex;justify-content:space-between">
+          Глубина анализа <span id="lbl-depth">5</span>/10
+        </label>
+        <input type="range" id="tw-depth" min="1" max="10" value="5"
+          oninput="document.getElementById('lbl-depth').textContent=this.value"
+          style="width:100%">
+        <div style="display:flex;justify-content:space-between;font-size: 11px;color:var(--muted)">
+          <span>Поверхностно</span><span>Глубоко</span>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Numbers -->
+    <div style="margin-top:14px;display:flex;flex-direction:column;gap:8px">
+      <label style="font-size: 11px;color:var(--muted-2);font-weight:500">Цифры и статистика</label>
+      <div class="seg-group" style="display:flex;width:100%">
+        <button id="tw-num-0" onclick="setNumbers(0)" class="num-btn active-num" style="flex:1">Без цифр</button>
+        <button id="tw-num-1" onclick="setNumbers(1)" class="num-btn"            style="flex:1">Из статьи</button>
+        <button id="tw-num-2" onclick="setNumbers(2)" class="num-btn"            style="flex:1">+ оценочно</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Generation spinner -->
+  <div id="tw-spinner" style="display:none;margin-top:14px;color:var(--muted);font-size:13px">
+    <span id="tw-spin-txt">Генерация черновиков…</span>
+  </div>
+
+  <!-- Drafts list -->
+  <div id="tw-drafts-wrap" style="display:none;margin-top:16px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+      <span style="font-size: 14px;color:var(--muted)"><span id="tw-draft-count">0</span> постов</span>
+    </div>
+
+    <!-- Publish settings -->
+    <div class="panel" style="margin-bottom:12px">
+      <div class="seg-label" style="margin-bottom:10px">Режим публикации</div>
+
+      <!-- Mode tabs -->
+      <div class="seg-group" style="display:flex;margin-bottom:12px;width:100%">
+        <button id="pub-mode-now"      onclick="setPubMode('now')"      class="pub-mode-btn active-pub" style="flex:1">Сразу</button>
+        <button id="pub-mode-interval" onclick="setPubMode('interval')" class="pub-mode-btn"            style="flex:1">Интервал</button>
+        <button id="pub-mode-schedule" onclick="setPubMode('schedule')" class="pub-mode-btn"            style="flex:1">Расписание</button>
+      </div>
+
+      <!-- Now: delay between posts -->
+      <div id="pub-panel-now">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size: 11px;color:var(--muted)">Пауза между постами:</span>
+          <input id="pub-delay" type="number" value="30" min="5" max="3600"
+            style="width:80px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size: 11px">
+          <span style="font-size: 11px;color:var(--muted)">сек</span>
+        </div>
+      </div>
+
+      <!-- Interval: every N hours -->
+      <div id="pub-panel-interval" class="hidden">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <span style="font-size: 11px;color:var(--muted)">Публиковать каждые</span>
+          <input id="pub-interval-h" type="number" value="2" min="1" max="24"
+            style="width:60px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size: 11px">
+          <span style="font-size: 11px;color:var(--muted)">ч</span>
+          <input id="pub-interval-m" type="number" value="0" min="0" max="59"
+            style="width:60px;background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size: 11px">
+          <span style="font-size: 11px;color:var(--muted)">мин, начиная с</span>
+          <input id="pub-interval-start" type="time" value="09:00"
+            style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size: 11px">
+        </div>
+      </div>
+
+      <!-- Schedule: specific times -->
+      <div id="pub-panel-schedule" class="hidden">
+        <div style="font-size: 11px;color:var(--muted);margin-bottom:8px">Время публикации (по одному посту в каждое время):</div>
+        <div id="pub-times-list" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+          <div class="pub-time-item" style="display:flex;align-items:center;gap:4px">
+            <input type="time" value="09:00" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size: 11px">
+            <button onclick="removeTime(this)" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size: 14px">×</button>
+          </div>
+          <div class="pub-time-item" style="display:flex;align-items:center;gap:4px">
+            <input type="time" value="13:00" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size: 11px">
+            <button onclick="removeTime(this)" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size: 14px">×</button>
+          </div>
+          <div class="pub-time-item" style="display:flex;align-items:center;gap:4px">
+            <input type="time" value="18:00" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size: 11px">
+            <button onclick="removeTime(this)" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size: 14px">×</button>
+          </div>
+        </div>
+        <button class="btn btn-ghost" onclick="addTime()" style="font-size: 11px;padding:4px 10px">+ Добавить время</button>
+      </div>
+    </div>
+
+    <div id="flow-refine" class="tw-refine-bar" style="scroll-margin-top:calc(var(--topbar-h) + 16px)">
+      <span class="tw-refine-label">Доработка выбранных:</span>
+      <button class="btn btn-ghost btn-sm" onclick="refineSelected('rewrite')">Переписать</button>
+      <button class="btn btn-ghost btn-sm" onclick="refineSelected('numbers')">+ Цифры</button>
+      <button class="btn btn-ghost btn-sm" onclick="refineSelected('lengthen')">Удлинить</button>
+      <button class="btn btn-ghost btn-sm" onclick="refineSelected('enrich')">Другие источники</button>
+      <span class="tw-refine-spacer"></span>
+      <button class="btn btn-ghost btn-sm" onclick="selectAllDrafts(true)">Выделить все</button>
+      <button class="btn btn-ghost btn-sm" onclick="selectAllDrafts(false)">Снять все</button>
+    </div>
+
+    <div id="flow-dispatch" style="display:flex;justify-content:space-between;align-items:center;gap:8px;scroll-margin-top:calc(var(--topbar-h) + 16px)">
+      <div id="flow-translate">
+        <button class="btn btn-ghost btn-sm" id="tw-btn-translate-all" onclick="translateAll()" style="display:none">
+          Перевести все на RU
+        </button>
+      </div>
+      <button class="btn btn-primary btn-sm" id="tw-btn-post" onclick="postSelected()">
+        Опубликовать выбранные
+      </button>
+    </div>
+
+    <div id="tw-drafts-list"></div>
+  </div>
+
+  <div id="tw-queue-card" class="panel" style="display:none;margin-top:12px">
+    <div class="panel-head">
+      <span class="panel-title">Очередь публикаций</span>
+      <button class="btn btn-ghost btn-sm" onclick="loadQueue()">Обновить</button>
+    </div>
+    <div id="tw-queue-list" style="font-size:12px;color:var(--muted)">Пусто</div>
+  </div>
+
+  </div>
+  </div>
+</div>
+
+    </div><!-- .main -->
+  </div><!-- .shell -->
+</div><!-- .app -->
+
+<script>
+  // ── Range slider fill ────────────────────────────────────────────────────
+  function updateRangeFill(el) {
+    const min = parseFloat(el.min) || 0;
+    const max = parseFloat(el.max) || 10;
+    const val = parseFloat(el.value) || 0;
+    const pct = ((val - min) / (max - min)) * 100;
+    el.style.background =
+      `linear-gradient(to right, var(--green) ${pct}%, var(--border-2) ${pct}%)`;
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('input[type="range"]').forEach(updateRangeFill);
+    initCards();
+    setupExportsList();
+    document.getElementById('tw-source-chips')?.addEventListener('click', e => {
+      const btn = e.target.closest('.source-chip-remove');
+      if (!btn) return;
+      e.preventDefault();
+      setSourceChecked(btn.dataset.file, parseInt(btn.dataset.srcIdx, 10), false);
+    });
+
+    ['saved-search', 'query-text', 'out-name', 'max-pages'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.addEventListener('input', updateAllCardSummaries);
+    });
+    document.getElementById('dedup')?.addEventListener('change', updateAllCardSummaries);
+
+    // Rail + flow scroll spy
+    const mainSections = ['sec-search','sec-export','sec-progress','sec-history','sec-publish'];
+    const flowSections = [
+      'sec-search', 'sec-export', 'sec-progress', 'sec-history',
+      'flow-parse', 'flow-filter', 'flow-topics', 'flow-author',
+      'flow-refine', 'flow-translate', 'flow-dispatch',
+    ];
+    const railLinks = document.querySelectorAll('.rail-link');
+    const flowNodes = document.querySelectorAll('.flow-node');
+    const publishFlowIds = new Set([
+      'flow-parse', 'flow-filter', 'flow-topics', 'flow-author',
+      'flow-refine', 'flow-translate', 'flow-dispatch',
+    ]);
+
+    const obs = new IntersectionObserver(entries => {
+      const visible = entries
+        .filter(e => e.isIntersecting)
+        .sort((a, b) => b.intersectionRatio - a.intersectionRatio);
+      if (!visible.length) return;
+      const id = visible[0].target.id;
+
+      const railId = publishFlowIds.has(id) ? 'sec-publish' : id;
+      railLinks.forEach(l => l.classList.toggle('active', l.getAttribute('href') === '#' + railId));
+      document.querySelectorAll('.card').forEach(c => c.classList.toggle('is-active', c.id === railId));
+      flowNodes.forEach(n => n.classList.toggle('is-active', n.dataset.flow === id));
+    }, { rootMargin: '-35% 0px -55% 0px', threshold: [0, 0.15, 0.5] });
+
+    [...new Set([...mainSections, ...flowSections])].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) obs.observe(el);
+    });
+
+    flowNodes.forEach(node => {
+      node.addEventListener('click', e => {
+        e.preventDefault();
+        const flowId = node.dataset.flow;
+        if (flowId === 'flow-topics') {
+          const file = document.getElementById('tw-file-select').value;
+          if (!file) { alert('Сначала выберите RTF-файл'); return; }
+          toggleCard('sec-publish', true);
+          syncTopicsPanel(file);
+          document.getElementById('flow-topics').scrollIntoView({ behavior: 'smooth', block: 'start' });
+          return;
+        }
+        const target = document.getElementById(flowId);
+        if (!target) return;
+        if (publishFlowIds.has(node.dataset.flow)) {
+          toggleCard('sec-publish', true);
+        }
+        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+  });
+  document.addEventListener('input', e => {
+    if (e.target.type === 'range') updateRangeFill(e.target);
+  });
+
+  let mode = 'search';
+  let evtSource = null;
+  let _maxPages = 0;
+  let _curPage  = 0;
+
+  // ── Collapsible cards ─────────────────────────────────────────────────────
+
+  let _cardCollapsed = (() => {
+    try { return JSON.parse(localStorage.getItem('cardCollapsed') || '{}'); }
+    catch { return {}; }
+  })();
+
+  function toggleCard(id, forceExpand) {
+    const card = document.getElementById(id);
+    if (!card) return;
+    if (forceExpand === true) card.classList.remove('collapsed');
+    else if (forceExpand === false) card.classList.add('collapsed');
+    else card.classList.toggle('collapsed');
+    const collapsed = card.classList.contains('collapsed');
+    const head = card.querySelector('.card-head');
+    if (head) head.setAttribute('aria-expanded', String(!collapsed));
+    _cardCollapsed[id] = collapsed;
+    localStorage.setItem('cardCollapsed', JSON.stringify(_cardCollapsed));
+    updateCardSummary(id);
+  }
+
+  function updateCardSummary(id) {
+    const el = document.getElementById('sum-' + id);
+    if (!el) return;
+    let text = '';
+    switch (id) {
+      case 'sec-search': {
+        const q = mode === 'search'
+          ? document.getElementById('saved-search').value.trim()
+          : document.getElementById('query-text').value.trim();
+        text = [q || '—', mode === 'search' ? 'сохранённый' : 'запрос'].join(' · ');
+        break;
+      }
+      case 'sec-export': {
+        const name = document.getElementById('out-name').value.trim() || 'factiva_export';
+        const pages = document.getElementById('max-pages').value;
+        const dedup = document.getElementById('dedup').checked ? 'без дублей' : 'с дублями';
+        text = [name, pages !== '0' ? pages + ' стр.' : 'все страницы', dedup].join(' · ');
+        break;
+      }
+      case 'sec-progress': {
+        text = document.getElementById('status-text').textContent;
+        const prog = document.getElementById('progress-label').textContent;
+        if (prog) text += ' · ' + prog;
+        break;
+      }
+      case 'sec-history': {
+        const n = document.querySelectorAll('#exports-list .export-item').length;
+        text = n ? n + ' файлов' : 'пусто';
+        break;
+      }
+      case 'sec-publish': {
+        const f = document.getElementById('tw-file-select').value;
+        const fn = f ? f.split(/[\\/]/).pop() : 'файл не выбран';
+        const plat = {twitter: 'Twitter', telegram: 'Telegram', both: 'Twitter+TG'}[_platform] || _platform;
+        const st = f ? _fileSourceState[f] : null;
+        const srcN = st ? st.sources.filter(s => st.checked[s.name]).length : 0;
+        const srcPart = srcN ? srcN + ' источн.' : '';
+        const personaShort = {
+          neutral: 'нейтр.', smirnov: 'Смирнов', baza: 'База',
+          aristarh: 'Аристарх', jora: 'Жора', tyler: 'Тайлер',
+        }[_persona] || _persona;
+        text = [fn, plat, _lang.toUpperCase(), personaShort, srcPart].filter(Boolean).join(' · ');
+        break;
+      }
+    }
+    el.textContent = text;
+  }
+
+  function updateAllCardSummaries() {
+    ['sec-search', 'sec-export', 'sec-progress', 'sec-history', 'sec-publish'].forEach(updateCardSummary);
+  }
+
+  function initCards() {
+    const defaults = { 'sec-history': true };
+    ['sec-search', 'sec-export', 'sec-progress', 'sec-history', 'sec-publish'].forEach(id => {
+      const card = document.getElementById(id);
+      if (!card) return;
+      const collapsed = _cardCollapsed[id] !== undefined ? _cardCollapsed[id] : !!defaults[id];
+      card.classList.toggle('collapsed', collapsed);
+      const head = card.querySelector('.card-head');
+      if (head) head.setAttribute('aria-expanded', String(!collapsed));
+    });
+    updateAllCardSummaries();
+  }
+
+  // ── Mode ──────────────────────────────────────────────────────────────────
+
+  function setMode(m) {
+    mode = m;
+    document.getElementById('panel-search').classList.toggle('hidden', m !== 'search');
+    document.getElementById('panel-query').classList.toggle('hidden',  m !== 'query');
+    document.getElementById('tab-search').classList.toggle('active', m === 'search');
+    document.getElementById('tab-query').classList.toggle('active',  m === 'query');
+    updateCardSummary('sec-search');
+  }
+
+  function onDateChange() {
+    const v = document.getElementById('date-preset').value;
+    document.getElementById('custom-date-row').classList.toggle('hidden', v !== 'custom');
+    // Set default date range = today
+    if (v === 'custom') {
+      const today = new Date().toISOString().slice(0,10);
+      document.getElementById('date-from').value = today;
+      document.getElementById('date-to').value   = today;
+    }
+  }
+
+  function getDateArg() {
+    const v = document.getElementById('date-preset').value;
+    if (v === 'custom') {
+      const f = document.getElementById('date-from').value;
+      const t = document.getElementById('date-to').value;
+      if (f && t) return `${f}:${t}`;
+      if (f) return f;
+    }
+    return v;
+  }
+
+  // ── Job ───────────────────────────────────────────────────────────────────
+
+  function slugify(text) {
+    return text.trim()
+      .toLowerCase()
+      .replace(/[^\w\s\-а-яёА-ЯЁ]/g, '')
+      .replace(/\s+/g, '_')
+      .slice(0, 60)
+      || 'factiva_export';
+  }
+
+  let _nameManuallyEdited = false;
+  document.getElementById('out-name').addEventListener('input', () => { _nameManuallyEdited = true; });
+
+  function autoFillName(val) {
+    if (_nameManuallyEdited) return;
+    const slug = slugify(val);
+    document.getElementById('out-name').value = slug;
+  }
+
+  async function runJob() {
+    const rawName = document.getElementById('out-name').value.trim();
+    // If still default or empty, derive from active query/search
+    const activeVal = mode === 'search'
+      ? document.getElementById('saved-search').value.trim()
+      : document.getElementById('query-text').value.trim();
+    const outName = (rawName && rawName !== 'factiva_export') ? rawName : slugify(activeVal);
+
+    const payload = {
+      mode,
+      search:    document.getElementById('saved-search').value.trim(),
+      query:     document.getElementById('query-text').value.trim(),
+      date:      getDateArg(),
+      source:    document.getElementById('source').value.trim(),
+      maxPages:  parseInt(document.getElementById('max-pages').value) || 0,
+      outName,
+      headless:  true,
+      dedup:     document.getElementById('dedup').checked,
+    };
+
+    _maxPages = parseInt(document.getElementById('max-pages').value) || 0;
+    _curPage  = 0;
+    toggleCard('sec-progress', true);
+    setStatus('running');
+    setConsole('');
+    setProgress(0, false);
+    document.getElementById('progress-wrap').style.display = 'block';
+    document.getElementById('download-row').style.display = 'none';
+    document.getElementById('btn-run').disabled = true;
+    document.getElementById('btn-stop').classList.remove('hidden');
+
+    const resp = await fetch('/run', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload),
+    });
+    const json = await resp.json();
+
+    if (json.error) {
+      appendLog('[ОШИБКА] ' + json.error, 'err');
+      setStatus('error');
+      resetButtons();
+      return;
+    }
+
+    // Start SSE stream
+    if (evtSource) evtSource.close();
+    evtSource = new EventSource('/stream');
+    evtSource.onmessage = e => {
+      const line = JSON.parse(e.data);
+      if (line === '__ERROR__') {
+        evtSource.close(); evtSource = null;
+        setStatus('error');
+        setProgress(0, false);
+        document.getElementById('progress-wrap').style.display = 'none';
+        document.getElementById('progress-label').textContent = '';
+        resetButtons();
+        return;
+      }
+      if (line.startsWith('__DONE__')) {
+        const outPath = line.slice(8);
+        evtSource.close();
+        evtSource = null;
+        setStatus('ok');
+        setProgress(100, true);
+        document.getElementById('progress-label').textContent = '';
+        resetButtons();
+        showDownload(outPath);
+        loadExportsAndTwitter();
+        return;
+      }
+      // Parse page progress from log: "[*] Page 3: 20 articles..."
+      const pageMatch = line.match(/\[\*\] Page (\d+):/);
+      if (pageMatch) {
+        _curPage = parseInt(pageMatch[1]);
+        const pct = _maxPages > 0 ? Math.min(100, Math.round(_curPage / _maxPages * 100)) : -1;
+        setProgress(pct, pct === 100);
+        document.getElementById('progress-label').textContent =
+          _maxPages > 0 ? `Стр. ${_curPage} / ${_maxPages}` : `Стр. ${_curPage}`;
+        updateCardSummary('sec-progress');
+      }
+      // Merging phase
+      if (line.includes('Merging')) {
+        setProgress(95, false);
+        document.getElementById('progress-label').textContent = 'Склейка…';
+      }
+      appendLog(line);
+    };
+    evtSource.onerror = () => {
+      setStatus('error');
+      resetButtons();
+    };
+  }
+
+  async function stopJob() {
+    await fetch('/stop', {method: 'POST'});
+    if (evtSource) { evtSource.close(); evtSource = null; }
+    appendLog('[ОСТАНОВЛЕНО]', 'warn');
+    setStatus('idle');
+    document.getElementById('progress-wrap').style.display = 'none';
+    document.getElementById('progress-label').textContent = '';
+    resetButtons();
+  }
+
+  function resetButtons() {
+    document.getElementById('btn-run').disabled = false;
+    document.getElementById('btn-stop').classList.add('hidden');
+  }
+
+  // pct: 0-100 = determinate, -1 = indeterminate shimmer, done=true hides bar
+  function setProgress(pct, done) {
+    const wrap = document.getElementById('progress-wrap');
+    const fill = document.getElementById('progress-fill');
+    if (done) {
+      fill.classList.remove('indeterminate');
+      fill.style.transform = 'scaleX(1)';
+      fill.style.background = 'var(--green)';
+      setTimeout(() => { wrap.style.display = 'none'; fill.style.background = ''; fill.style.transform = 'scaleX(0)'; }, 1200);
+      return;
+    }
+    wrap.style.display = 'block';
+    if (pct < 0) {
+      fill.classList.add('indeterminate');
+    } else {
+      fill.classList.remove('indeterminate');
+      fill.style.transform = `scaleX(${pct / 100})`;
+    }
+  }
+
+  // ── Console ───────────────────────────────────────────────────────────────
+
+  function setConsole(txt) {
+    const el = document.getElementById('console');
+    el.innerHTML = '';
+    if (txt) appendLog(txt);
+  }
+
+  function clearConsole() {
+    document.getElementById('console').innerHTML = '';
+  }
+
+  function appendLog(line, forceCls) {
+    const el = document.getElementById('console');
+    const span = document.createElement('span');
+
+    let cls = forceCls;
+    if (!cls) {
+      if (line.startsWith('[+]'))       cls = 'log-ok';
+      else if (line.startsWith('[!]') || line.startsWith('[ERROR]')) cls = 'log-err';
+      else if (line.startsWith('[*]'))  cls = 'log-info';
+    }
+    if (cls) span.className = cls;
+    span.textContent = line + '\n';
+    el.appendChild(span);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  // ── Status ────────────────────────────────────────────────────────────────
+
+  function setStatus(s) {
+    const badge = document.getElementById('status-badge');
+    const dot   = badge.querySelector('.dot');
+    const txt   = document.getElementById('status-text');
+    badge.className = 'badge';
+    dot.classList.remove('pulse');
+
+    const map = {
+      idle:    ['badge-idle',    'Ожидание',   false, 'ready'],
+      running: ['badge-running', 'Выполняется',true,  'running'],
+      ok:      ['badge-ok',      'Готово',     false, 'done'],
+      error:   ['badge-error',   'Ошибка',     false, 'error'],
+    };
+    const [cls, label, pulse, topbar] = map[s] || map.idle;
+    badge.classList.add(cls);
+    txt.textContent = label;
+    if (pulse) dot.classList.add('pulse');
+    const tb = document.getElementById('topbar-status');
+    if (tb) {
+      tb.textContent = topbar;
+      tb.className = 'topbar-status' + (s === 'running' ? ' is-running' : s === 'ok' ? ' is-done' : s === 'error' ? ' is-error' : '');
+    }
+    updateCardSummary('sec-progress');
+  }
+
+  // ── Download ──────────────────────────────────────────────────────────────
+
+  function showDownload(outPath) {
+    if (!outPath) return;
+    const row  = document.getElementById('download-row');
+    const name = outPath.split(/[\\/]/).pop();
+    document.getElementById('dl-name').textContent = name;
+    document.getElementById('dl-link').href = '/download?path=' + encodeURIComponent(outPath);
+    row.style.display = 'flex';
+
+    // Try to get file size
+    fetch('/file-info?path=' + encodeURIComponent(outPath))
+      .then(r => r.json())
+      .then(d => { document.getElementById('dl-size').textContent = d.size || ''; })
+      .catch(() => {});
+  }
+
+  // ── Exports list ──────────────────────────────────────────────────────────
+
+  let _fileSourceState = {};   // file → { sources, checked, total }
+  let _expandedExportFile = null;
+  let _exportIndexByFile = {}; // file → row index in #exports-list
+  let _exportSourcesListCollapsed = {}; // file → bool
+
+  function exportRowId(idx) {
+    return 'exp-' + idx;
+  }
+
+  function initSourceState(file, sources, total) {
+    const prev = _fileSourceState[file];
+    const checked = {};
+    sources.forEach(s => {
+      checked[s.name] = prev?.checked[s.name] !== undefined ? prev.checked[s.name] : true;
+    });
+    _fileSourceState[file] = { sources, checked, total };
+    return _fileSourceState[file];
+  }
+
+  async function fetchSourcesForFile(file) {
+    const r = await fetch('/sources', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ file }),
+    });
+    const d = await r.json();
+    if (d.error) throw new Error(d.error);
+    if (!d.sources?.length) throw new Error('Источники не найдены в файле');
+    return initSourceState(file, d.sources, d.total);
+  }
+
+  function escHtml(s) {
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+            .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+  }
+
+  function buildSourceRowsHTML(file, idPrefix) {
+    const st = _fileSourceState[file];
+    if (!st) return '';
+    const maxBar = Math.max(...st.sources.map(s => s.count), 1);
+    return st.sources.map((s, i) => {
+      const pct = Math.round(s.count / maxBar * 100);
+      const cid = idPrefix + '-' + i;
+      const checked = st.checked[s.name] ? 'checked' : '';
+      return `
+        <label class="source-row" title="${escHtml(s.name)}">
+          <input type="checkbox" id="${cid}" ${checked}
+            data-action="src-check" data-file="${escHtml(file)}" data-src-idx="${i}">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">
+              <span style="font-size:12px;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:320px">${escHtml(s.name)}</span>
+              <span style="font-size:11px;color:var(--muted-2);flex-shrink:0">${s.count}</span>
+            </div>
+            <div style="height:2px;background:var(--border);border-radius:1px;margin-top:5px">
+              <div style="height:2px;background:var(--muted-2);border-radius:1px;width:${pct}%;transition:width 300ms var(--ease-out)"></div>
+            </div>
+          </div>
+        </label>`;
+    }).join('');
+  }
+
+  function setSourceChecked(file, idx, val) {
+    const st = _fileSourceState[file];
+    if (!st || !st.sources[idx]) return;
+    st.checked[st.sources[idx].name] = val;
+    updateSourceCountUI(file);
+    if (document.getElementById('tw-file-select').value === file) {
+      renderSourceChips(file);
+    }
+  }
+
+  function renderSourceChips(file) {
+    const bar = document.getElementById('tw-source-chips-bar');
+    const container = document.getElementById('tw-source-chips');
+    const st = _fileSourceState[file];
+    if (!bar || !container || !st || document.getElementById('tw-file-select').value !== file) {
+      if (bar) bar.style.display = 'none';
+      return;
+    }
+    const included = st.sources.filter(s => st.checked[s.name]);
+    if (!included.length) {
+      bar.style.display = 'none';
+      return;
+    }
+    bar.style.display = 'block';
+    container.innerHTML = included.map(s => {
+      const srcIdx = st.sources.indexOf(s);
+      const label = s.name.length > 42 ? s.name.slice(0, 40) + '…' : s.name;
+      return `<span class="source-chip" title="${escHtml(s.name)}">
+        <span class="source-chip-text">${escHtml(label)}</span>
+        <span class="source-chip-count">${s.count}</span>
+        <button type="button" class="source-chip-remove" data-file="${escHtml(file)}" data-src-idx="${srcIdx}" aria-label="Убрать">×</button>
+      </span>`;
+    }).join('');
+    updateCardSummary('sec-publish');
+  }
+
+  function buildExportSourcesPanelInnerHTML(file, eid) {
+    const collapsed = !!_exportSourcesListCollapsed[file];
+    return `
+      <div class="panel exp-src-panel-inner${collapsed ? ' list-collapsed' : ''}">
+        <div class="panel-head exp-src-panel-head" data-action="toggle-src-list"
+          data-file="${escHtml(file)}" data-eid="${eid}">
+          <div>
+            <span class="panel-title">Источники</span>
+            <span class="panel-meta" id="exp-src-count-${eid}"></span>
+          </div>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button type="button" class="btn btn-ghost btn-sm" data-action="src-all" data-file="${escHtml(file)}" data-val="1">Все</button>
+            <button type="button" class="btn btn-ghost btn-sm" data-action="src-all" data-file="${escHtml(file)}" data-val="0">Снять</button>
+            <span class="exp-src-chevron" aria-hidden="true"></span>
+          </div>
+        </div>
+        <div class="exp-src-collapsible">
+          <div class="exp-src-collapsible-inner">
+            <div class="exp-src-list">
+              ${buildSourceRowsHTML(file, 'exp-src-' + eid)}
+            </div>
+            <div class="export-sources-actions">
+              <button type="button" class="btn btn-primary btn-sm" data-action="apply-sources" data-file="${escHtml(file)}">
+                Выбрать источники
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  function toggleExportSourcesList(file, eid) {
+    const inner = document.querySelector(`#exp-src-panel-${eid} .exp-src-panel-inner`);
+    if (!inner) return;
+    const collapsed = !inner.classList.contains('list-collapsed');
+    inner.classList.toggle('list-collapsed', collapsed);
+    _exportSourcesListCollapsed[file] = collapsed;
+  }
+
+  function applySourcesToPublish(file) {
+    const st = _fileSourceState[file];
+    if (!st) return;
+    const included = st.sources.filter(s => st.checked[s.name]);
+    if (!included.length) {
+      alert('Выберите хотя бы один источник');
+      return;
+    }
+    const sel = document.getElementById('tw-file-select');
+    for (const opt of sel.options) {
+      if (opt.value === file) { sel.value = file; break; }
+    }
+    toggleCard('sec-publish', true);
+    syncPublishSourcesPanel(file);
+    renderSourceChips(file);
+    document.getElementById('sec-publish').scrollIntoView({ behavior: 'smooth' });
+  }
+
+  function updateSourceCountUI(file) {
+    const st = _fileSourceState[file];
+    if (!st) return;
+    const checked = st.sources.filter(s => st.checked[s.name]).reduce((n, s) => n + s.count, 0);
+    const total = st.total;
+    const pubCount = document.getElementById('tw-sources-count');
+    const pubTotal = document.getElementById('tw-sources-total');
+    if (pubCount && document.getElementById('tw-file-select').value === file) {
+      pubCount.textContent = checked;
+      pubTotal.textContent = total;
+    }
+    const idx = _exportIndexByFile[file];
+    const expCount = idx !== undefined
+      ? document.getElementById('exp-src-count-' + exportRowId(idx))
+      : null;
+    if (expCount) expCount.textContent = `${checked} / ${total} статей`;
+    if (document.getElementById('tw-file-select').value === file) {
+      renderSourceChips(file);
+    }
+  }
+
+  function selectAllSourcesForFile(file, val) {
+    const st = _fileSourceState[file];
+    if (!st) return;
+    st.sources.forEach(s => { st.checked[s.name] = val; });
+    const idx = _exportIndexByFile[file];
+    const prefix = idx !== undefined ? 'exp-src-' + exportRowId(idx) : null;
+    if (prefix) {
+      st.sources.forEach((_, i) => {
+        const el = document.getElementById(prefix + '-' + i);
+        if (el) el.checked = val;
+      });
+    }
+    const pubPrefix = 'pub-src';
+    if (document.getElementById('tw-file-select').value === file) {
+      st.sources.forEach((_, i) => {
+        const el = document.getElementById(pubPrefix + '-' + i);
+        if (el) el.checked = val;
+      });
+    }
+    updateSourceCountUI(file);
+  }
+
+  function getExcludedSources() {
+    const file = document.getElementById('tw-file-select').value;
+    if (!file || !_fileSourceState[file]) return [];
+    const st = _fileSourceState[file];
+    return st.sources.filter(s => !st.checked[s.name]).map(s => s.name);
+  }
+
+  function scrollExportPanelIntoView(panel) {
+    const list = document.getElementById('exports-list');
+    const item = panel.closest('.export-item');
+    if (list && item) {
+      const listRect = list.getBoundingClientRect();
+      const itemRect = item.getBoundingClientRect();
+      if (itemRect.top < listRect.top) {
+        list.scrollTop -= listRect.top - itemRect.top + 8;
+      } else if (itemRect.bottom > listRect.bottom) {
+        list.scrollTop += itemRect.bottom - listRect.bottom + 8;
+      }
+    }
+    panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
+
+  async function toggleExportSources(file, idx) {
+    if (idx === undefined) idx = _exportIndexByFile[file];
+    toggleCard('sec-history', true);
+    const eid = exportRowId(idx);
+    const panel = document.getElementById('exp-src-panel-' + eid);
+    const btn = document.getElementById('exp-src-btn-' + eid);
+    if (!panel) {
+      console.error('Sources panel not found for', file, idx);
+      return;
+    }
+
+    if (_expandedExportFile === file && !panel.classList.contains('hidden')) {
+      panel.classList.add('hidden');
+      panel.closest('.export-item')?.classList.remove('expanded');
+      btn?.classList.remove('active');
+      _expandedExportFile = null;
+      return;
+    }
+
+    document.querySelectorAll('.export-sources-panel').forEach(p => p.classList.add('hidden'));
+    document.querySelectorAll('.export-item').forEach(li => li.classList.remove('expanded'));
+    document.querySelectorAll('.btn-analyze').forEach(b => b.classList.remove('active'));
+
+    panel.classList.remove('hidden');
+    panel.closest('.export-item')?.classList.add('expanded');
+    btn?.classList.add('active');
+    _expandedExportFile = file;
+    scrollExportPanelIntoView(panel);
+
+    const body = panel.querySelector('.export-sources-body');
+    body.innerHTML = '<span style="color:var(--muted);font-size:12px">Анализ…</span>';
+
+    try {
+      await fetchSourcesForFile(file);
+      body.innerHTML = buildExportSourcesPanelInnerHTML(file, eid);
+      updateSourceCountUI(file);
+    } catch (e) {
+      body.innerHTML = `<span style="color:var(--red);font-size:12px">${escHtml(e.message)}</span>`;
+    }
+  }
+
+  function onExportsListClick(e) {
+    const srcBtn = e.target.closest('[data-action="sources"]');
+    if (srcBtn) {
+      e.preventDefault();
+      toggleExportSources(srcBtn.dataset.file, parseInt(srcBtn.dataset.idx, 10));
+      return;
+    }
+    const postsBtn = e.target.closest('[data-action="posts"]');
+    if (postsBtn) {
+      e.preventDefault();
+      generateFromFile(postsBtn.dataset.file);
+      return;
+    }
+    const applyBtn = e.target.closest('[data-action="apply-sources"]');
+    if (applyBtn) {
+      e.preventDefault();
+      applySourcesToPublish(applyBtn.dataset.file);
+      return;
+    }
+    const toggleList = e.target.closest('[data-action="toggle-src-list"]');
+    if (toggleList && !e.target.closest('button')) {
+      e.preventDefault();
+      toggleExportSourcesList(toggleList.dataset.file, toggleList.dataset.eid);
+      return;
+    }
+    const allBtn = e.target.closest('[data-action="src-all"]');
+    if (allBtn) {
+      e.preventDefault();
+      selectAllSourcesForFile(allBtn.dataset.file, allBtn.dataset.val === '1');
+    }
+  }
+
+  function onExportsListChange(e) {
+    const cb = e.target.closest('[data-action="src-check"]');
+    if (!cb) return;
+    setSourceChecked(cb.dataset.file, parseInt(cb.dataset.srcIdx, 10), cb.checked);
+  }
+
+  function setupExportsList() {
+    const ul = document.getElementById('exports-list');
+    if (!ul || ul._bound) return;
+    ul._bound = true;
+    ul.addEventListener('click', onExportsListClick);
+    ul.addEventListener('change', onExportsListChange);
+  }
+
+  async function loadExports() {
+    try {
+      const r = await fetch('/exports');
+      const files = await r.json();
+      const ul = document.getElementById('exports-list');
+      if (!files.length) {
+        ul.innerHTML = '<li style="color:var(--muted);font-size:14px;padding:10px 8px">Нет сохранённых файлов</li>';
+        return;
+      }
+      _exportIndexByFile = {};
+      ul.innerHTML = files.map((f, i) => {
+        _exportIndexByFile[f.path] = i;
+        const eid = exportRowId(i);
+        return `
+        <li class="export-item" data-file="${escHtml(f.path)}" data-idx="${i}">
+          <div class="export-row">
+            <div class="file-info">
+              <div class="file-name">${escHtml(f.name)}</div>
+              <div class="file-meta">${f.size} · ${f.mtime}</div>
+            </div>
+            <div class="file-actions">
+              <button type="button" class="btn btn-ghost btn-sm btn-analyze" id="exp-src-btn-${eid}"
+                data-action="sources" data-file="${escHtml(f.path)}" data-idx="${i}">Источники</button>
+              <button type="button" class="btn btn-ghost btn-sm btn-accent"
+                data-action="posts" data-file="${escHtml(f.path)}">Посты</button>
+              <a class="btn btn-ghost btn-sm"
+                 href="/download?path=${encodeURIComponent(f.path)}">RTF</a>
+            </div>
+          </div>
+          <div class="export-sources-panel hidden" id="exp-src-panel-${eid}">
+            <div class="export-sources-body"></div>
+          </div>
+        </li>`;
+      }).join('');
+
+      if (_expandedExportFile && _fileSourceState[_expandedExportFile]) {
+        const idx = _exportIndexByFile[_expandedExportFile];
+        if (idx !== undefined) {
+          const eid = exportRowId(idx);
+          const panel = document.getElementById('exp-src-panel-' + eid);
+          if (panel) {
+            panel.classList.remove('hidden');
+            panel.closest('.export-item')?.classList.add('expanded');
+            document.getElementById('exp-src-btn-' + eid)?.classList.add('active');
+            panel.querySelector('.export-sources-body').innerHTML =
+              buildExportSourcesPanelInnerHTML(_expandedExportFile, eid);
+            updateSourceCountUI(_expandedExportFile);
+          }
+        }
+      }
+    } catch(e) {
+      console.error(e);
+    }
+    updateCardSummary('sec-history');
+  }
+
+  async function loadExportsAndTwitter() {
+    await loadExports();
+    await loadTwitterFileList();
+  }
+  loadExportsAndTwitter();
+
+  function generateFromFile(filename) {
+    loadTwitterFileList().then(async () => {
+      const sel = document.getElementById('tw-file-select');
+      for (let opt of sel.options) {
+        if (opt.value === filename) { sel.value = filename; break; }
+      }
+      if (!_fileSourceState[filename]) {
+        try { await fetchSourcesForFile(filename); } catch(e) { /* ok */ }
+      }
+      syncPublishSourcesPanel(filename);
+      document.getElementById('sec-publish').scrollIntoView({behavior: 'smooth'});
+      generateDrafts();
+    });
+  }
+
+  // ── Twitter ───────────────────────────────────────────────────────────────
+
+  // Check API keys on load
+  async function checkTwitterKeys() {
+    try {
+      const r = await fetch('/check-twitter-keys');
+      const d = await r.json();
+      if (d.missing_twitter && d.missing_twitter.length) {
+        document.getElementById('tw-key-warn').style.display = 'block';
+        document.getElementById('tw-missing-keys').textContent = d.missing_twitter.join(', ');
+      }
+      if (!d.anthropic_ok) {
+        document.getElementById('tw-anthropic-warn').style.display = 'block';
+      }
+    } catch(e) {}
+  }
+  checkTwitterKeys();
+
+  async function loadTwitterFileList() {
+    try {
+      const r = await fetch('/exports');
+      const files = await r.json();
+      const sel = document.getElementById('tw-file-select');
+      sel.innerHTML = '<option value="">— выберите файл —</option>' +
+        files.map(f => `<option value="${f.path}">${f.name} (${f.size})</option>`).join('');
+    } catch(e) {}
+  }
+  let _drafts = [];
+  let _numbersMode = 0;
+  let _aiModel = 'claude';
+  let _persona = 'neutral';
+
+  const PERSONA_DESCS = {
+    neutral: 'Как сейчас — Cinico, циничный аналитический голос с настройками ниже.',
+    smirnov: 'Виктор Смирнов — журналист: только факты, без эмоций и восклицаний.',
+    baza: 'База — разговорный стиль для своих: «кароч», «по факту», без воды.',
+    aristarh: 'Аристарх Борисович — литературный язык, образы, неспешное изложение.',
+    jora: 'Жора — двусмысленности, намёки, юмор на грани.',
+    tyler: 'Тайлер — тяжёлая ирония, скепсис, сухие финалы.',
+  };
+
+  function setPersona(val) {
+    _persona = val;
+    document.querySelectorAll('.persona-btn').forEach(b => b.classList.remove('active-persona'));
+    const btn = document.getElementById('persona-' + val);
+    if (btn) btn.classList.add('active-persona');
+    const desc = document.getElementById('persona-desc');
+    if (desc) desc.textContent = PERSONA_DESCS[val] || '';
+    updateCardSummary('sec-publish');
+  }
+  let _platform = 'twitter';
+  let _lang = 'en';
+  let _pubMode = 'now';
+  let _topics = [];
+  let _topicsChecked = {};
+  let _publishSourcesListCollapsed = false;
+  let _topicsListCollapsed = false;
+  let _topicsFilteredTotal = 0;
+
+  function togglePublishSourcesList() {
+    const inner = document.getElementById('tw-sources-panel-inner');
+    if (!inner) return;
+    _publishSourcesListCollapsed = !inner.classList.contains('list-collapsed');
+    inner.classList.toggle('list-collapsed', _publishSourcesListCollapsed);
+  }
+
+  function toggleTopicsPanel() {
+    const inner = document.getElementById('tw-topics-panel-inner');
+    if (!inner) return;
+    _topicsListCollapsed = !inner.classList.contains('list-collapsed');
+    inner.classList.toggle('list-collapsed', _topicsListCollapsed);
+  }
+
+  function resetTopicsPanel() {
+    _topics = [];
+    _topicsChecked = {};
+    _topicsFilteredTotal = 0;
+    document.getElementById('tw-topics-list').innerHTML = '';
+    document.getElementById('tw-topics-empty').style.display = 'block';
+    document.getElementById('tw-topics-status').style.display = 'none';
+    document.getElementById('tw-topics-footer').style.display = 'none';
+    document.getElementById('tw-topics-meta').textContent = 'не запущен';
+    document.getElementById('tw-selected-count').textContent = '0';
+    document.getElementById('tw-total-count').textContent = '0';
+  }
+
+  function syncTopicsPanel(file) {
+    const wrap = document.getElementById('tw-topics-wrap');
+    const btn = document.getElementById('tw-btn-radar');
+    if (!file) {
+      wrap.style.display = 'none';
+      if (btn) btn.disabled = true;
+      resetTopicsPanel();
+      return;
+    }
+    wrap.style.display = 'block';
+    if (btn) btn.disabled = false;
+    const inner = document.getElementById('tw-topics-panel-inner');
+    if (inner) inner.classList.toggle('list-collapsed', _topicsListCollapsed);
+  }
+
+  function syncPublishSourcesPanel(file) {
+    syncTopicsPanel(file);
+    const wrap = document.getElementById('tw-sources-wrap');
+    const st = _fileSourceState[file];
+    if (!st) {
+      wrap.style.display = 'none';
+      return;
+    }
+    const list = document.getElementById('tw-sources-list');
+    list.innerHTML = buildSourceRowsHTML(file, 'pub-src');
+    wrap.style.display = 'block';
+    const inner = document.getElementById('tw-sources-panel-inner');
+    if (inner) inner.classList.toggle('list-collapsed', _publishSourcesListCollapsed);
+    updateSourceCountUI(file);
+    renderSourceChips(file);
+    updateCardSummary('sec-publish');
+  }
+
+  function onFileChange() {
+    const file = document.getElementById('tw-file-select').value;
+    resetTopicsPanel();
+    if (!file) {
+      document.getElementById('tw-sources-wrap').style.display = 'none';
+      document.getElementById('tw-source-chips-bar').style.display = 'none';
+      syncTopicsPanel(null);
+      updateCardSummary('sec-publish');
+      return;
+    }
+    if (_fileSourceState[file]) {
+      syncPublishSourcesPanel(file);
+    } else {
+      loadSources(file);
+    }
+  }
+
+  async function loadSources(file) {
+    const wrap = document.getElementById('tw-sources-wrap');
+    wrap.style.display = 'none';
+    try {
+      await fetchSourcesForFile(file);
+      syncPublishSourcesPanel(file);
+    } catch(e) { /* silent */ }
+  }
+
+  function renderSources(total) {
+    const file = document.getElementById('tw-file-select').value;
+    const list = document.getElementById('tw-sources-list');
+    list.innerHTML = buildSourceRowsHTML(file, 'pub-src');
+    updateSourceCountUI(file);
+  }
+
+  function updateSourceCount() {
+    const file = document.getElementById('tw-file-select').value;
+    updateSourceCountUI(file);
+  }
+
+  function selectAllSources(val) {
+    const file = document.getElementById('tw-file-select').value;
+    if (file) selectAllSourcesForFile(file, val);
+  }
+
+  async function runTopicRadar() {
+    const file = document.getElementById('tw-file-select').value;
+    if (!file) { alert('Выберите RTF-файл'); return; }
+    const maxTopics = parseInt(document.getElementById('tw-max-topics').value) || 15;
+
+    const btn = document.getElementById('tw-btn-radar');
+    const status = document.getElementById('tw-topics-status');
+    const empty = document.getElementById('tw-topics-empty');
+    btn.disabled = true;
+    btn.textContent = 'Сканирую…';
+    status.style.display = 'block';
+    status.className = 'radar-status is-loading';
+    status.textContent = 'Кластеризация заголовков…';
+    empty.style.display = 'none';
+
+    const body = { file, max_topics: maxTopics };
+    const excl = getExcludedSources();
+    if (excl.length) body.excluded_sources = excl;
+
+    try {
+      const r = await fetch('/analyze-topics', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (d.error) {
+        status.className = 'radar-status is-error';
+        status.textContent = 'Ошибка: ' + d.error;
+        empty.style.display = 'block';
+        return;
+      }
+      _topics = d.topics;
+      _topicsChecked = {};
+      _topics.forEach((_, i) => _topicsChecked[i] = true);
+      _topicsFilteredTotal = d.total_articles;
+      renderTopics(d.total_articles, d.filtered_from);
+      status.style.display = 'none';
+      document.getElementById('tw-topics-footer').style.display = 'flex';
+      const inner = document.getElementById('tw-topics-panel-inner');
+      if (inner) inner.classList.remove('list-collapsed');
+      _topicsListCollapsed = false;
+      toggleCard('sec-publish', true);
+      document.getElementById('flow-topics').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    } catch (e) {
+      status.className = 'radar-status is-error';
+      status.textContent = 'Сетевая ошибка: ' + e;
+      empty.style.display = 'block';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = 'Сканировать';
+    }
+  }
+
+  function renderTopics(totalArticles, filteredFrom) {
+    document.getElementById('tw-total-count').textContent = totalArticles;
+    updateSelectedCount();
+
+    const list = document.getElementById('tw-topics-list');
+    list.innerHTML = _topics.map((t, i) => {
+      const pct = Math.round(t.count / totalArticles * 100);
+      return `
+        <label class="topic-chip">
+          <input type="checkbox" data-ti="${i}" ${_topicsChecked[i] ? 'checked' : ''}
+            onchange="onTopicCheck(${i}, this.checked)"
+            style="margin-top:2px;flex-shrink:0">
+          <div style="flex:1;min-width:0">
+            <div style="display:flex;align-items:baseline;gap:8px;flex-wrap:wrap">
+              <span style="font-size:13px;font-weight:500">${escHtml(t.topic)}</span>
+              <span style="font-size:11px;color:var(--muted-2)">${t.count} ст. · ${pct}%</span>
+            </div>
+            <div style="font-size:11px;color:var(--muted);margin-top:3px;line-height:1.45">${escHtml(t.summary)}</div>
+            <div style="margin-top:8px;background:var(--border);border-radius:2px;height:2px;overflow:hidden">
+              <div style="height:100%;width:${pct}%;background:var(--muted-2);border-radius:2px;transition:width 300ms var(--ease-out)"></div>
+            </div>
+          </div>
+        </label>`;
+    }).join('');
+
+    document.getElementById('tw-topics-meta').textContent =
+      `${_topics.length} тем · ${totalArticles} статей` +
+      (filteredFrom && filteredFrom !== totalArticles ? ` (из ${filteredFrom})` : '');
+  }
+
+  function onTopicCheck(i, val) {
+    _topicsChecked[i] = val;
+    updateSelectedCount();
+  }
+
+  function updateSelectedCount() {
+    const count = _topics
+      .filter((_, i) => _topicsChecked[i])
+      .reduce((s, t) => s + t.count, 0);
+    document.getElementById('tw-selected-count').textContent = count;
+  }
+
+  function selectAllTopics(val) {
+    _topics.forEach((_, i) => {
+      _topicsChecked[i] = val;
+      const cb = document.querySelector(`input[data-ti="${i}"]`);
+      if (cb) cb.checked = val;
+    });
+    updateSelectedCount();
+  }
+
+  function getSelectedArticleIndices() {
+    if (!_topics.length) return null;
+    const indices = new Set();
+    _topics.forEach((t, i) => {
+      if (_topicsChecked[i]) t.article_indices.forEach(idx => indices.add(idx));
+    });
+    return indices.size ? [...indices] : [];
+  }
+
+  function setPubMode(m) {
+    _pubMode = m;
+    document.querySelectorAll('.pub-mode-btn').forEach(b => b.classList.remove('active-pub'));
+    document.getElementById('pub-mode-' + m).classList.add('active-pub');
+    ['now','interval','schedule'].forEach(p =>
+      document.getElementById('pub-panel-' + p).classList.toggle('hidden', p !== m)
+    );
+  }
+
+  function addTime() {
+    const div = document.createElement('div');
+    div.className = 'pub-time-item';
+    div.style.cssText = 'display:flex;align-items:center;gap:4px';
+    div.innerHTML = '<input type="time" value="12:00" style="background:var(--surface);border:1px solid var(--border);border-radius:6px;color:var(--text);padding:4px 8px;font-size: 11px"><button onclick="removeTime(this)" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size: 14px">×</button>';
+    document.getElementById('pub-times-list').appendChild(div);
+  }
+
+  function removeTime(btn) {
+    btn.parentElement.remove();
+  }
+
+  function getSchedulePayload() {
+    if (_pubMode === 'now') {
+      return { mode: 'now', delay: parseInt(document.getElementById('pub-delay').value) || 30 };
+    }
+    if (_pubMode === 'interval') {
+      const h = parseInt(document.getElementById('pub-interval-h').value) || 2;
+      const m = parseInt(document.getElementById('pub-interval-m').value) || 0;
+      const start = document.getElementById('pub-interval-start').value || '09:00';
+      return { mode: 'interval', interval_minutes: h * 60 + m, start_time: start };
+    }
+    if (_pubMode === 'schedule') {
+      const times = [...document.querySelectorAll('#pub-times-list input[type=time]')].map(i => i.value).filter(Boolean);
+      return { mode: 'schedule', times };
+    }
+  }
+
+  async function loadQueue() {
+    try {
+      const r = await fetch('/tweet-queue');
+      const d = await r.json();
+      const el = document.getElementById('tw-queue-list');
+      if (!d.queue || !d.queue.length) {
+        el.innerHTML = '<span style="color:var(--muted)">Очередь пуста</span>';
+        document.getElementById('tw-queue-card').style.display = 'none';
+        return;
+      }
+      document.getElementById('tw-queue-card').style.display = 'block';
+      el.innerHTML = d.queue.map(item => {
+        const statusCls = item.status === 'posted' ? 'posted' : item.status === 'error' ? 'error' : 'pending';
+        const statusTxt = item.status === 'posted' ? 'Опубликовано' : item.status === 'error' ? 'Ошибка' : 'Ожидает';
+        return `
+        <div class="queue-item">
+          <div style="flex:1;min-width:0">
+            <div style="color:var(--text);margin-bottom:4px;font-size:13px;line-height:1.45">${escHtml(item.text.slice(0,120))}${item.text.length>120?'…':''}</div>
+            <div style="color:var(--muted);font-size:11px">
+              ${item.scheduled_at}
+              <span class="status-tag ${statusCls}" style="margin-left:8px">${statusTxt}</span>
+            </div>
+          </div>
+          ${item.status === 'pending' ? `<button onclick="cancelTweet('${item.id}')" class="btn btn-ghost btn-sm" style="color:var(--red)">Отмена</button>` : ''}
+        </div>`;
+      }).join('');
+    } catch(e) {}
+  }
+
+  async function cancelTweet(id) {
+    await fetch('/cancel-tweet/' + id, {method:'POST'});
+    loadQueue();
+  }
+
+  function setAiModel(val) {
+    _aiModel = val;
+    document.querySelectorAll('.ai-btn').forEach(b => b.classList.remove('active-ai'));
+    document.getElementById('ai-' + val).classList.add('active-ai');
+  }
+
+  function setPlatform(val) {
+    _platform = val;
+    document.querySelectorAll('.plat-btn').forEach(b => b.classList.remove('active-plat'));
+    document.getElementById('plat-' + val).classList.add('active-plat');
+    updateCardSummary('sec-publish');
+  }
+
+  function setLang(val) {
+    _lang = val;
+    document.querySelectorAll('.lang-btn').forEach(b => b.classList.remove('active-lang'));
+    document.getElementById('lang-' + val).classList.add('active-lang');
+    updateCardSummary('sec-publish');
+  }
+
+  function setNumbers(val) {
+    _numbersMode = val;
+    document.querySelectorAll('.num-btn').forEach((b, i) => {
+      b.classList.toggle('active-num', i === val);
+    });
+  }
+
+  async function generateDrafts() {
+    const file = document.getElementById('tw-file-select').value;
+    if (!file) { alert('Выберите RTF-файл'); return; }
+
+    const max      = parseInt(document.getElementById('tw-max').value) || 20;
+    const cynicism = parseInt(document.getElementById('tw-cynicism').value);
+    const harsh    = parseInt(document.getElementById('tw-harsh').value);
+    const length   = parseInt(document.getElementById('tw-length').value);
+    const depth    = parseInt(document.getElementById('tw-depth').value);
+    const numbers  = _numbersMode;
+
+    const selectedIndices = getSelectedArticleIndices();
+    if (selectedIndices !== null && selectedIndices.length === 0) {
+      alert('Выберите хотя бы одну тему в Радаре тем');
+      return;
+    }
+    const filterNote = selectedIndices
+      ? ` из ${selectedIndices.length} выбр. статей`
+      : '';
+
+    document.getElementById('tw-spinner').style.display = 'block';
+    document.getElementById('tw-drafts-wrap').style.display = 'none';
+    document.getElementById('tw-btn-gen').disabled = true;
+    document.getElementById('tw-spin-txt').textContent = `Генерация черновиков${filterNote}…`;
+
+    try {
+      const body = {
+        file, max, cynicism, harsh, length, depth, numbers,
+        ai_model: _aiModel, lang: _lang, persona: _persona,
+      };
+      if (selectedIndices !== null) body.selected_indices = selectedIndices;
+      const excl = getExcludedSources();
+      if (excl.length) body.excluded_sources = excl;
+
+      const r = await fetch('/generate-drafts', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+
+      if (d.error) {
+        alert('Ошибка: ' + d.error);
+        return;
+      }
+
+      _drafts = d.drafts;
+      renderDrafts(_drafts);
+      document.getElementById('tw-drafts-wrap').style.display = 'block';
+      document.getElementById('tw-btn-translate-all').style.display = 'block';
+    } catch(e) {
+      alert('Сетевая ошибка: ' + e);
+    } finally {
+      document.getElementById('tw-spinner').style.display = 'none';
+      document.getElementById('tw-btn-gen').disabled = false;
+    }
+  }
+
+  function updateDraftCount() {
+    let n = _drafts.length;
+    _drafts.forEach((_, i) => {
+      const ru = document.getElementById(`tw-unit-ru-${i}`);
+      if (ru && ru.style.display !== 'none') n++;
+    });
+    document.getElementById('tw-draft-count').textContent = n;
+  }
+
+  function onPostUnitCheck(i, lang) {
+    const chk = document.getElementById(`tw-chk-${lang}-${i}`);
+    const unit = document.getElementById(`tw-unit-${lang}-${i}`);
+    if (unit && chk) unit.classList.toggle('is-checked', chk.checked);
+  }
+
+  function getPostUnitLimit(platform) {
+    return platform === 'telegram' ? 4096 : 280;
+  }
+
+  function updatePostCharCount(i, lang) {
+    const isRu = lang === 'ru';
+    const ta = document.getElementById(isRu ? `tw-text-ru-${i}` : `tw-text-${i}`);
+    const platEl = document.getElementById(`tw-plat-${lang}-${i}`);
+    const span = document.getElementById(isRu ? `tw-chars-ru-${i}` : `tw-chars-${i}`);
+    if (!ta || !span) return;
+    const plat = platEl?.value || (isRu ? 'telegram' : 'twitter');
+    const limit = getPostUnitLimit(plat);
+    span.textContent = `${ta.value.length} / ${limit}`;
+    span.classList.toggle('over', ta.value.length > limit);
+  }
+
+  function renderDrafts(drafts) {
+    const list = document.getElementById('tw-drafts-list');
+    list.innerHTML = drafts.map((d, i) => `
+      <div class="tw-draft-card" id="tw-card-${i}">
+        <div class="draft-meta">
+          <span>
+            ${escHtml(d.title.slice(0, 80))}${d.title.length > 80 ? '…' : ''}
+            ${d.source ? ' · ' + escHtml(d.source) : ''}
+            ${d.date ? ' · ' + escHtml(d.date) : ''}
+          </span>
+          <button onclick="translateOne(${i})" id="tw-trbtn-${i}"
+            class="btn-translate" title="Перевести на русский">RU</button>
+        </div>
+
+        <div class="tw-post-unit is-checked" id="tw-unit-en-${i}">
+          <div class="tw-post-unit-head">
+            <label class="tw-post-unit-select">
+              <input type="checkbox" id="tw-chk-en-${i}" checked
+                onchange="onPostUnitCheck(${i}, 'en')">
+              <span class="draft-lang-label" style="margin:0">English</span>
+            </label>
+            <select class="tw-post-platform" id="tw-plat-en-${i}"
+              onchange="updatePostCharCount(${i}, 'en')">
+              <option value="twitter" selected>Twitter</option>
+              <option value="telegram">Telegram</option>
+            </select>
+            <span id="tw-chars-${i}" class="char-count">${d.draft.length} / 280</span>
+          </div>
+          <textarea id="tw-text-${i}" class="tw-textarea"
+            oninput="updatePostCharCount(${i}, 'en')">${escHtml(d.draft)}</textarea>
+          <div id="tw-result-en-${i}" class="tw-post-result" style="display:none"></div>
+        </div>
+
+        <div class="tw-post-unit" id="tw-unit-ru-${i}" style="display:none">
+          <div class="tw-post-unit-head">
+            <label class="tw-post-unit-select">
+              <input type="checkbox" id="tw-chk-ru-${i}" checked
+                onchange="onPostUnitCheck(${i}, 'ru')">
+              <span class="draft-lang-label" style="margin:0">Русский</span>
+            </label>
+            <select class="tw-post-platform" id="tw-plat-ru-${i}"
+              onchange="updatePostCharCount(${i}, 'ru')">
+              <option value="twitter">Twitter</option>
+              <option value="telegram" selected>Telegram</option>
+            </select>
+            <span id="tw-chars-ru-${i}" class="char-count">0 / 4096</span>
+          </div>
+          <textarea id="tw-text-ru-${i}" class="tw-textarea"
+            oninput="updatePostCharCount(${i}, 'ru')"></textarea>
+          <div id="tw-result-ru-${i}" class="tw-post-result" style="display:none"></div>
+        </div>
+      </div>
+    `).join('');
+    updateDraftCount();
+  }
+
+  function updateCharCount(i) {
+    updatePostCharCount(i, 'en');
+  }
+
+  function updateCharCountRu(i) {
+    updatePostCharCount(i, 'ru');
+  }
+
+  async function translateOne(i) {
+    const btn = document.getElementById(`tw-trbtn-${i}`);
+    const text = document.getElementById(`tw-text-${i}`).value.trim();
+    if (!text) return;
+    btn.textContent = '…';
+    btn.disabled = true;
+    try {
+      const r = await fetch('/translate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ text, lang: 'ru' }),
+      });
+      const d = await r.json();
+      if (d.error) { btn.textContent = 'RU'; btn.disabled = false; return; }
+      const wrap = document.getElementById(`tw-unit-ru-${i}`);
+      const ta = document.getElementById(`tw-text-ru-${i}`);
+      ta.value = d.translated;
+      wrap.style.display = 'block';
+      wrap.classList.add('is-checked');
+      document.getElementById(`tw-chk-ru-${i}`).checked = true;
+      updatePostCharCount(i, 'ru');
+      updateDraftCount();
+      btn.textContent = 'RU';
+      btn.classList.add('translated');
+      btn.disabled = false;
+    } catch(e) {
+      btn.textContent = 'RU';
+      btn.disabled = false;
+    }
+  }
+
+  async function translateAll() {
+    const btn = document.getElementById('tw-btn-translate-all');
+    btn.disabled = true;
+    btn.textContent = 'Переводим…';
+    for (let i = 0; i < _drafts.length; i++) {
+      await translateOne(i);
+    }
+    btn.textContent = 'Переведено';
+    btn.disabled = false;
+  }
+
+  function selectAllDrafts(val) {
+    _drafts.forEach((_, i) => {
+      ['en', 'ru'].forEach(lang => {
+        const chk = document.getElementById(`tw-chk-${lang}-${i}`);
+        const unit = document.getElementById(`tw-unit-${lang}-${i}`);
+        if (!chk || !unit || unit.style.display === 'none') return;
+        chk.checked = val;
+        unit.classList.toggle('is-checked', val);
+      });
+    });
+  }
+
+  function collectSelectedPosts() {
+    const items = [];
+    for (let i = 0; i < _drafts.length; i++) {
+      const enChk = document.getElementById(`tw-chk-en-${i}`);
+      if (enChk?.checked) {
+        const text = document.getElementById(`tw-text-${i}`).value.trim();
+        if (text) {
+          items.push({
+            i, lang: 'en', text,
+            platform: document.getElementById(`tw-plat-en-${i}`).value,
+          });
+        }
+      }
+      const ruUnit = document.getElementById(`tw-unit-ru-${i}`);
+      if (ruUnit?.style.display !== 'none') {
+        const ruChk = document.getElementById(`tw-chk-ru-${i}`);
+        const ruText = document.getElementById(`tw-text-ru-${i}`).value.trim();
+        if (ruChk?.checked && ruText) {
+          items.push({
+            i, lang: 'ru', text: ruText,
+            platform: document.getElementById(`tw-plat-ru-${i}`).value,
+          });
+        }
+      }
+    }
+    return items;
+  }
+
+  const REFINE_STATUS = {
+    rewrite: 'Переписываю…',
+    numbers: 'Добавляю цифры…',
+    lengthen: 'Удлиняю…',
+    enrich: 'Ищу в других источниках…',
+  };
+
+  async function refineSelected(action) {
+    const selected = collectSelectedPosts();
+    if (!selected.length) {
+      alert('Выберите один или несколько постов галочкой');
+      return;
+    }
+
+    const file = document.getElementById('tw-file-select').value;
+    if (!file) { alert('Нет файла выгрузки'); return; }
+
+    const cynicism = parseInt(document.getElementById('tw-cynicism').value);
+    const harsh    = parseInt(document.getElementById('tw-harsh').value);
+    const length   = parseInt(document.getElementById('tw-length').value);
+    const depth    = parseInt(document.getElementById('tw-depth').value);
+
+    const bar = document.getElementById('flow-refine');
+    bar.querySelectorAll('.btn').forEach(b => b.disabled = true);
+
+    for (const { i, lang, text } of selected) {
+      const d = _drafts[i];
+      const taId = lang === 'ru' ? `tw-text-ru-${i}` : `tw-text-${i}`;
+      const ta = document.getElementById(taId);
+      const resDiv = document.getElementById(`tw-result-${lang}-${i}`);
+      resDiv.style.display = 'block';
+      resDiv.innerHTML = `<span style="color:var(--muted)">${REFINE_STATUS[action] || '…'}</span>`;
+
+      try {
+        const r = await fetch('/refine-draft', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({
+            action, file,
+            title: d.title,
+            source: d.source || '',
+            text,
+            cynicism, harsh, length, depth,
+            numbers: _numbersMode,
+            ai_model: _aiModel,
+            lang,
+            persona: _persona,
+          }),
+        });
+        const data = await r.json();
+        if (data.error) {
+          resDiv.innerHTML = `<span style="color:var(--red)">${escHtml(data.error)}</span>`;
+        } else {
+          ta.value = data.text;
+          updatePostCharCount(i, lang);
+          resDiv.innerHTML = '<span style="color:var(--green)">Готово</span>';
+          setTimeout(() => { resDiv.style.display = 'none'; }, 2500);
+        }
+      } catch (e) {
+        resDiv.innerHTML = `<span style="color:var(--red)">${escHtml(String(e))}</span>`;
+      }
+    }
+
+    bar.querySelectorAll('.btn').forEach(b => b.disabled = false);
+  }
+
+  async function postSelected() {
+    const selected = collectSelectedPosts();
+    if (!selected.length) { alert('Нет выбранных постов'); return; }
+
+    const schedule = getSchedulePayload();
+    document.getElementById('tw-btn-post').disabled = true;
+
+    // Helper: post to one endpoint, return result HTML
+    async function postToEndpoint(endpoint, text) {
+      const r = await fetch(endpoint, {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({text})});
+      const d = await r.json();
+      if (d.error) return { ok: false, html: `<span style="color:var(--red)">${escHtml(d.error)}</span>` };
+      return { ok: true, html: `<span style="color:var(--green)"><a href="${d.url}" target="_blank" style="color:var(--accent)">${d.url}</a></span>` };
+    }
+
+    // Immediate mode — post one by one with delay
+    if (schedule.mode === 'now') {
+      for (let n = 0; n < selected.length; n++) {
+        const { i, lang, text, platform } = selected[n];
+        const resDiv = document.getElementById(`tw-result-${lang}-${i}`);
+        const endpoint = platform === 'telegram' ? '/post-telegram' : '/post-tweet';
+        const label = platform === 'telegram' ? 'Telegram' : 'Twitter';
+        resDiv.style.display = 'block';
+        resDiv.innerHTML = '<span style="color:var(--muted)">Публикую…</span>';
+        try {
+          const result = await postToEndpoint(endpoint, text);
+          resDiv.innerHTML = `<span style="color:var(--muted-2)">${label}:</span> ${result.html}`;
+          if (result.ok) {
+            const chk = document.getElementById(`tw-chk-${lang}-${i}`);
+            if (chk) {
+              chk.checked = false;
+              onPostUnitCheck(i, lang);
+            }
+          }
+        } catch(e) {
+          resDiv.innerHTML = `<span style="color:var(--red)">${escHtml(String(e))}</span>`;
+        }
+        if (n < selected.length - 1) {
+          await new Promise(res => setTimeout(res, schedule.delay * 1000));
+        }
+      }
+      document.getElementById('tw-btn-post').disabled = false;
+      return;
+    }
+
+    // Interval / Schedule mode — queue Twitter posts only
+    const twitterItems = selected.filter(x => x.platform === 'twitter');
+    if (!twitterItems.length) {
+      alert('Режим очереди поддерживает только Twitter. Выберите Twitter для хотя бы одного поста или используйте «Сразу».');
+      document.getElementById('tw-btn-post').disabled = false;
+      return;
+    }
+    try {
+      const r = await fetch('/schedule-tweets', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ texts: twitterItems.map(x => x.text), schedule }),
+      });
+      const d = await r.json();
+      if (d.error) {
+        alert('Ошибка: ' + d.error);
+      } else {
+        twitterItems.forEach((item, idx) => {
+          const resDiv = document.getElementById(`tw-result-${item.lang}-${item.i}`);
+          resDiv.style.display = 'block';
+          resDiv.innerHTML = `<span style="color:var(--yellow)">В очереди: ${escHtml(d.scheduled[idx] || '')}</span>`;
+          const chk = document.getElementById(`tw-chk-${item.lang}-${item.i}`);
+          if (chk) {
+            chk.checked = false;
+            onPostUnitCheck(item.i, item.lang);
+          }
+        });
+        document.getElementById('tw-queue-card').style.display = 'block';
+        setTimeout(loadQueue, 500);
+      }
+    } catch(e) {
+      alert('Ошибка: ' + e);
+    }
+    document.getElementById('tw-btn-post').disabled = false;
+  }
+</script>
+</body>
+</html>
