@@ -1488,19 +1488,24 @@ def _rank_indices_by_relevance(
     if not indices:
         return indices
     try:
-        from twitter_poster import score_articles_by_focus
+        from twitter_poster import score_articles_by_focus, focus_ranking_config
         scores = score_articles_by_focus(articles, indices, search_context)
+        cfg = focus_ranking_config()
     except Exception:
         scores = {}
+        cfg = {"drop_boring": True}
 
     if scores:
         # Strict top ordering by combined rank; unscored indices keep original order at the tail.
         scored_idx = [i for i in indices if i in scores]
         unscored = [i for i in indices if i not in scores]
         scored_idx.sort(key=lambda i: (-scores[i]["rank"], i))
-        # Drop clearly boring items entirely when we still have enough strong ones.
+        # Optionally drop boring items when enough non-boring ones remain (FOCUS_DROP_BORING).
         strong = [i for i in scored_idx if not scores[i]["boring"]]
-        ordered = (strong if len(strong) >= min_keep else scored_idx) + unscored
+        if cfg.get("drop_boring", True) and len(strong) >= min_keep:
+            ordered = strong + unscored
+        else:
+            ordered = scored_idx + unscored
         try:
             preview = ", ".join(
                 f"#{i}(imp{scores[i]['importance']}/fit{scores[i]['interest_fit']}"

@@ -1124,6 +1124,34 @@ def _focus_profile() -> dict:
     return {"interests": interests, "boring": boring}
 
 
+def _env_float(name: str, default: float) -> float:
+    """Read a float from env, falling back to default on missing/garbage."""
+    try:
+        v = os.getenv(name)
+        return float(v) if v not in (None, "") else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    v = (os.getenv(name) or "").strip().lower()
+    if v in ("1", "true", "yes", "on"):
+        return True
+    if v in ("0", "false", "no", "off"):
+        return False
+    return default
+
+
+def focus_ranking_config() -> dict:
+    """Tunable ranking weights from env (see .env FOCUS_* keys)."""
+    return {
+        "w_importance": _env_float("FOCUS_WEIGHT_IMPORTANCE", 0.5),
+        "w_interest": _env_float("FOCUS_WEIGHT_INTEREST", 0.5),
+        "boring_penalty": _env_float("FOCUS_BORING_PENALTY", 3.0),
+        "drop_boring": _env_bool("FOCUS_DROP_BORING", True),
+    }
+
+
 def _focus_prompt_block(search_context: str = "") -> str:
     """Reusable profile block injected into ranking / topic / cluster prompts."""
     prof = _focus_profile()
@@ -1172,6 +1200,7 @@ def score_articles_by_focus(
     if not pairs:
         return {}
 
+    cfg = focus_ranking_config()
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     scores: dict[int, dict] = {}
     batch_size = 10
@@ -1222,8 +1251,10 @@ Include every INDEX exactly once."""
                 imp = max(0, min(10, int(t.get("importance", 0) or 0)))
                 fit = max(0, min(10, int(t.get("interest_fit", 0) or 0)))
                 boring = bool(t.get("boring") in (True, "true", 1, "1"))
-                # Combined rank: importance and fit weighted equally; boring is penalized hard.
-                rank = (imp * 0.5 + fit * 0.5) - (3.0 if boring else 0.0)
+                # Combined rank with env-tunable weights; boring is penalized.
+                rank = (imp * cfg["w_importance"] + fit * cfg["w_interest"]) - (
+                    cfg["boring_penalty"] if boring else 0.0
+                )
                 scores[idx] = {
                     "importance": imp,
                     "interest_fit": fit,
