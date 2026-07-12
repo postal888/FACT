@@ -1,10 +1,44 @@
+# Secrets and runtime data
 .env
-venv/
+*.env.local
+
+# Python
 __pycache__/
+*.py[cod]
+venv/
+.venv/
+*.egg-info/
+
+# Exports and local data
 exports/
 publisher_stack.json
 pipelines.json
 published_stories.json
+
+# Backups
 *.bak
+
+# IDE / tooling
+.claude/
+.codex/
+.agents/
+.cursor/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp diagnostics on server
+test_twitter_api.py
+inspect_failed_twitter.py
+test_long_tweet.py
+
+# Local test artifacts
+*.rtf
 *.session
-tg_session.session
+.session_state.json
+debug_search.png
+error_screenshot.png
+rtf_output/
+.impeccable/
+skills-lock.json

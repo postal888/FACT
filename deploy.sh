@@ -6,7 +6,7 @@ set -e
 echo "==> Updating system..."
 apt-get update -q && apt-get upgrade -y -q
 
-echo "==> Installing Python 3.11 + tools..."
+echo "==> Installing Python 3.12 + tools..."
 apt-get install -y -q python3.12 python3.12-venv python3-pip git curl unzip
 
 echo "==> Cloning repo..."
@@ -14,7 +14,7 @@ cd /opt
 if [ -d factiva ]; then
   cd factiva && git pull
 else
-  git clone https://github.com/YOUR_GITHUB/factiva.git factiva || {
+  git clone https://github.com/postal888/FACT.git factiva || {
     echo "  (no git repo — copying files manually, see instructions)"
     mkdir -p /opt/factiva
   }
