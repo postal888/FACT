@@ -616,8 +616,9 @@ PERSONAS["smirnov"] = PERSONAS["thomson"]  # legacy alias
 FACTUAL_RULES = """
 CRITICAL — factual grounding:
 Do not invent facts not present in the source material.
-Every post must stand alone: open with WHO did WHAT (real names from the article).
-A reader who never saw the article must understand the news."""
+Every post must stand alone: establish WHO did WHAT up front, with real names —
+stated as direct knowledge, not as a report on a source.
+A reader who saw no article must fully understand the event from your post."""
 
 NO_META_RULES = """
 CRITICAL — never meta-comment on the source text:
@@ -633,6 +634,25 @@ Forbidden openers and phrases (any language), including but not limited to:
 - "The piece / report / write-up suggests..."
 - Never open with generic labels like "Research Article", "Commentary", "News Article".
 State facts and ideas directly. The reader should not feel they are reading a book report.
+"""
+
+POV_RULES = """
+CRITICAL — write a THOUGHT of your own, not a recap, but never leave the reader without context:
+The post is your own observation prompted by a real event — the way a sharp person posts a take, not a summary of an article.
+
+Mandatory structure (in this order, woven into natural prose — do NOT label the parts):
+1. CONTEXT FIRST (1 sentence, sometimes 2 for complex stories): ground the reader in the concrete event.
+   Name the real actors (company/person) and what actually happened or changed, with one anchoring detail
+   (a number, product, deal, scale). A reader who has seen no article must understand WHAT this is about.
+   Do NOT open with a vague abstraction, a rhetorical question, or your opinion before the fact is stated.
+2. THEN YOUR THOUGHT: the point you are actually making — the tension, the non-obvious implication,
+   what it reveals, who really wins or loses, where it leads. This is the reason the post exists.
+
+Hard rules:
+- The fact is the springboard, not the subject. Do not narrate or explain the source; react to the world.
+- Never reference "the article/study/report/piece" or that you read anything. The event is common knowledge you are commenting on.
+- Do not invent facts. Use only what the source supports, but phrase it as direct knowledge, not attribution.
+- If you cannot state the concrete event, the post is broken — always establish it before commenting.
 """
 
 SHORT_FORMAT_RULES = """
@@ -921,6 +941,7 @@ def _build_system_prompt(params: dict) -> str:
         return f"""{persona_prompt}
 {FACTUAL_RULES}
 {NO_META_RULES}
+{POV_RULES}
 {SHORT_FORMAT_RULES}
 {link_str}
 
@@ -932,6 +953,7 @@ Stay fully in this persona's voice. Do not mix styles.
     prompt = CINICO_BASE + f"""
 
 {_lang_instruction(lang, cinico=True)}
+{POV_RULES}
 {SHORT_FORMAT_RULES}
 Cynicism level: {cynicism}/10. {"Be extremely cynical and sardonic." if cynicism >= 8 else "Be moderately cynical." if cynicism >= 5 else "Keep mild irony, stay factual."}
 Harshness level: {harsh}/10. {"Be ruthless and cutting, no mercy." if harsh >= 8 else "Be direct but not brutal." if harsh >= 5 else "Stay measured and analytical."}
@@ -1046,24 +1068,28 @@ def _build_user_prompt(article: dict, params: dict) -> str:
 
     if length <= 2:
         instruction = (
-            "Write a Cinico-style post:\n"
+            "Write a Cinico-style post as your own thought (NOT a recap of the article):\n"
             f"{SHORT_FORMAT_RULES}\n"
-            "Line 1: Concrete context — name the company/companies or people from the article, "
-            "what they announced/did/partnered on, and one key detail (product, deal, market, scale). "
-            "No vague openers.\n"
-            "Line 2 (blank line before): Your biting one-liner comment on what it really means.\n"
+            "Line 1 — CONTEXT FIRST: state the concrete event directly, as common knowledge — "
+            "name the company/people involved, what they did, and one anchoring detail (product, deal, market, scale). "
+            "No vague openers, no 'the article', no rhetorical question before the fact.\n"
+            "Line 2 (blank line before): YOUR biting one-liner — the non-obvious implication or what it really reveals.\n"
         )
     elif length == 3:
         instruction = (
-            "Write a Cinico-style post:\n"
-            "Part 1 (2-4 sentences): Summarize what happened with enough context for someone who hasn't read the article — who did what, what changed, what the scale is.\n"
-            "Part 2 (blank line, 1 sentence): Your sharp, cynical comment on the implication.\n"
+            "Write a Cinico-style post as your own thought (NOT a recap of the article):\n"
+            "Part 1 (2-4 sentences) — CONTEXT FIRST: establish what happened directly, as your own knowledge — "
+            "who did what, what changed, what the scale is — enough that someone with zero context understands it. "
+            "Do not narrate or attribute a source.\n"
+            "Part 2 (blank line, 1 sentence): YOUR sharp take — the tension or implication, not a summary.\n"
         )
     else:  # 4 or 5
         instruction = (
-            "Write a Cinico-style post:\n"
-            "Part 1 (4-7 sentences): Tell the full story. What's the background, what happened, who's involved, what's the scale, what are the consequences. Write it so someone with zero context understands the situation completely.\n"
-            "Part 2 (blank line, 1-2 sentences): Your sharp, cynical bottom line — the real meaning behind the headline.\n"
+            "Write a Cinico-style post as your own thought (NOT a recap of the article):\n"
+            "Part 1 (4-7 sentences) — CONTEXT FIRST: lay out the situation directly, as common knowledge — "
+            "background, what happened, who's involved, the scale, the consequences — so someone with zero context "
+            "understands completely. State it as fact, never as 'the article says'.\n"
+            "Part 2 (blank line, 1-2 sentences): YOUR bottom line — the real meaning and where it leads, your own view.\n"
         )
 
     return (
