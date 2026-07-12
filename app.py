@@ -1449,14 +1449,14 @@ def _search_relevance_score(article: dict, search_context: str) -> float:
     return _jaccard(ctx_tokens, art_tokens)
 
 
-def _rank_indices_by_relevance(
+def _rank_indices_by_jaccard(
     indices: list[int],
     articles: list[dict],
     search_context: str,
     *,
     min_keep: int = 1,
 ) -> list[int]:
-    """Prefer articles that match the Factiva export focus."""
+    """Legacy fallback: prefer articles whose words overlap the export query."""
     if not search_context or not indices:
         return indices
     scored = [
@@ -1468,6 +1468,54 @@ def _rank_indices_by_relevance(
     if len(strong) >= min_keep:
         return strong
     return [i for _, i in scored]
+
+
+def _rank_indices_by_relevance(
+    indices: list[int],
+    articles: list[dict],
+    search_context: str,
+    *,
+    min_keep: int = 1,
+) -> list[int]:
+    """Prioritize articles by importance + fit to the user's focus profile.
+
+    Primary path: LLM scorer (score_articles_by_focus) ranks strictly by combined
+    importance/interest score, so the most significant on-focus stories come first
+    regardless of which topic cluster they belong to. Boring/niche items sink.
+    Falls back to the legacy Jaccard ranker if scoring is unavailable (no API key,
+    no focus profile configured, or an API error).
+    """
+    if not indices:
+        return indices
+    try:
+        from twitter_poster import score_articles_by_focus
+        scores = score_articles_by_focus(articles, indices, search_context)
+    except Exception:
+        scores = {}
+
+    if scores:
+        # Strict top ordering by combined rank; unscored indices keep original order at the tail.
+        scored_idx = [i for i in indices if i in scores]
+        unscored = [i for i in indices if i not in scores]
+        scored_idx.sort(key=lambda i: (-scores[i]["rank"], i))
+        # Drop clearly boring items entirely when we still have enough strong ones.
+        strong = [i for i in scored_idx if not scores[i]["boring"]]
+        ordered = (strong if len(strong) >= min_keep else scored_idx) + unscored
+        try:
+            preview = ", ".join(
+                f"#{i}(imp{scores[i]['importance']}/fit{scores[i]['interest_fit']}"
+                + (",boring" if scores[i]["boring"] else "") + ")"
+                for i in ordered[:8] if i in scores
+            )
+            print(f"[focus-rank] top: {preview}", flush=True)
+        except Exception:
+            pass
+        return ordered
+
+    # Fallback: legacy word-overlap ranking.
+    return _rank_indices_by_jaccard(
+        indices, articles, search_context, min_keep=min_keep,
+    )
 
 
 def _rpa_analyze_topics(wf: dict, filename: str) -> dict:
@@ -1500,9 +1548,13 @@ def _rpa_generate_article_topics(
     """RPA: generateArticleTopics() → POST /generate-article-topics."""
     topics_checked = wf.get("topicsChecked") or {}
     cap = min(40, max(1, int(max_drafts)))
-    selected_indices = _indices_from_checked_topics(topics, topics_checked, cap)
+    # Rank on a WIDER candidate pool than the final cap so the importance ranker
+    # can pick the best stories across all clusters — not just a round-robin subset
+    # that was already truncated to `cap` before scoring.
+    pool = min(60, max(cap * 3, 30))
+    selected_indices = _indices_from_checked_topics(topics, topics_checked, pool)
     if not selected_indices:
-        selected_indices = _collect_article_indices(topics, cap)
+        selected_indices = _collect_article_indices(topics, pool)
     if not selected_indices:
         raise RuntimeError("Нет статей для генерации тем постов")
 
@@ -1514,6 +1566,8 @@ def _rpa_generate_article_topics(
     )
     if not selected_indices:
         raise RuntimeError("Нет релевантных статей для тем постов (вне фокуса экспорта)")
+    # Strict top-N: keep only the most important/on-focus articles after ranking.
+    selected_indices = selected_indices[:cap]
     raw = generate_article_topics(
         str(BASE_DIR / "exports" / filename),
         selected_indices=selected_indices,
@@ -1669,15 +1723,19 @@ def _analyze_topics_file(
     param_block = _topics_cluster_instructions(
         depth, theme, news_weight, max_topics, themes=themes,
     )
+    try:
+        from twitter_poster import _focus_prompt_block
+        profile_block = _focus_prompt_block(search_context)
+    except Exception:
+        profile_block = f"Export search: {search_context}\n" if search_context else ""
     focus_block = ""
-    if search_context:
+    if profile_block:
         focus_block = f"""
-Export focus (why these articles were collected — clustering MUST follow this):
-{search_context}
-
-- Top clusters must align with this export focus.
-- Niche academic/regional/military studies with no clear link to the focus → cluster «Вне фокуса» or «Прочие», never the largest group.
-- Prefer industry, tech, business, markets stories that match the search.
+{profile_block}
+Clustering MUST follow this focus:
+- Top clusters must align with the user's INTERESTS above.
+- Niche/local/regional/military/humanitarian items with no clear business/tech/finance link → cluster «Вне фокуса» or «Прочие», never the largest group.
+- Prefer industry, tech, business, markets, finance stories that match the focus.
 """
 
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))

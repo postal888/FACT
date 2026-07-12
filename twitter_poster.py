@@ -1117,6 +1117,127 @@ def generate_tweet_draft_gpt(article: dict, params: dict) -> str:
     ))
 
 
+def _focus_profile() -> dict:
+    """User content focus from env: what's interesting vs boring for prioritization."""
+    interests = (os.getenv("FOCUS_INTERESTS") or "").strip()
+    boring = (os.getenv("FOCUS_BORING") or "").strip()
+    return {"interests": interests, "boring": boring}
+
+
+def _focus_prompt_block(search_context: str = "") -> str:
+    """Reusable profile block injected into ranking / topic / cluster prompts."""
+    prof = _focus_profile()
+    lines: list[str] = []
+    if search_context:
+        lines.append(f"Export search (Factiva/TechCrunch query): {search_context}")
+    if prof["interests"]:
+        lines.append(f"User INTERESTS (surface these, rank high): {prof['interests']}")
+    if prof["boring"]:
+        lines.append(f"User finds BORING (rank low / skip): {prof['boring']}")
+    if not lines:
+        return ""
+    return "User content focus:\n" + "\n".join(f"- {l}" for l in lines) + "\n"
+
+
+def score_articles_by_focus(
+    articles: list[dict],
+    indices: list[int],
+    search_context: str = "",
+    *,
+    model: str = "claude-opus-4-5",
+) -> dict[int, dict]:
+    """Score each article for importance + fit to the user's focus profile.
+
+    Returns {index: {"importance": int, "interest_fit": int, "boring": bool,
+                     "rank": float, "reason": str}}.
+    importance   0-10: how significant/newsworthy the story is (scale, impact, novelty).
+    interest_fit 0-10: how well it matches the user's stated interests.
+    boring       true: niche/local/routine story with no broad hook.
+    rank: combined score used for strict top-N ordering.
+    On any failure returns {} so the caller can fall back to the old ranker.
+    """
+    import json as _json
+    import re as _re
+    import anthropic
+
+    if not os.getenv("ANTHROPIC_API_KEY") or not indices:
+        return {}
+
+    focus_block = _focus_prompt_block(search_context)
+    if not focus_block:
+        # No profile configured — nothing meaningful to score against.
+        return {}
+
+    pairs = [(i, articles[i]) for i in indices if 0 <= i < len(articles)]
+    if not pairs:
+        return {}
+
+    client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+    scores: dict[int, dict] = {}
+    batch_size = 10
+
+    for start in range(0, len(pairs), batch_size):
+        batch = pairs[start:start + batch_size]
+        blocks = []
+        for i, art in batch:
+            body = (art.get("body") or "")[:1800]
+            blocks.append(
+                f"### INDEX {i}\n"
+                f"Title: {art.get('title', '')}\n"
+                f"Source: {art.get('source', '')}\n"
+                f"Body:\n{body}\n"
+            )
+        prompt = f"""You are a senior editor deciding which news is worth posting for a channel about technology, business and finance.
+{focus_block}
+For EACH article below, read the BODY (not just the title) and rate:
+- importance (0-10): objective newsworthiness — scale, market/industry impact, novelty, how many people/companies it affects. A major deal, funding round, product launch, regulation, or market move is high. A local/routine item is low.
+- interest_fit (0-10): how well it matches the USER INTERESTS above. Off-focus or BORING themes score low.
+- boring (true/false): true if it's a niche, local, or routine story with no broad tech/business/finance hook (e.g. "3G rollout in one country", obscure regional/military/humanitarian item, plain corporate press release).
+- reason: max 12 words, why.
+
+Be decisive and spread the scores — do not cluster everything in the middle. Reserve 8-10 for genuinely significant, on-focus stories.
+
+Articles:
+{chr(10).join(blocks)}
+
+Return a JSON array ONLY — no markdown fences:
+[{{"index":N,"importance":0-10,"interest_fit":0-10,"boring":false,"reason":"..."}}]
+Include every INDEX exactly once."""
+        try:
+            r = client.messages.create(
+                model=model,
+                max_tokens=1500,
+                temperature=0.2,
+                system="You output only raw JSON arrays. No markdown, no explanation.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = r.content[0].text.strip()
+            match = _re.search(r"\[[\s\S]*\]", raw)
+            if not match:
+                continue
+            for t in _json.loads(match.group(0)):
+                if "index" not in t:
+                    continue
+                idx = int(t["index"])
+                imp = max(0, min(10, int(t.get("importance", 0) or 0)))
+                fit = max(0, min(10, int(t.get("interest_fit", 0) or 0)))
+                boring = bool(t.get("boring") in (True, "true", 1, "1"))
+                # Combined rank: importance and fit weighted equally; boring is penalized hard.
+                rank = (imp * 0.5 + fit * 0.5) - (3.0 if boring else 0.0)
+                scores[idx] = {
+                    "importance": imp,
+                    "interest_fit": fit,
+                    "boring": boring,
+                    "rank": rank,
+                    "reason": (t.get("reason") or "")[:120],
+                }
+        except Exception:
+            # Fail soft: skip this batch, caller falls back if scores end up empty.
+            continue
+
+    return scores
+
+
 def generate_article_topics(
     rtf_path: str,
     selected_indices: list | None = None,
@@ -1152,16 +1273,16 @@ def generate_article_topics(
         "ua": "Write post_topic, angle, and hook in Ukrainian.",
     }.get(lang, "Write post_topic, angle, and hook in Russian.")
 
+    profile_block = _focus_prompt_block(search_context)
     focus_block = ""
-    if search_context:
+    if profile_block:
         focus_block = f"""
-Export focus (what the user searched for in Factiva):
-{search_context}
-
-Relevance rules:
-- Propose post topics ONLY for articles that clearly fit this focus OR have obvious tech/business/industry audience appeal.
-- For niche academic papers (obscure regional studies, military insurgency, humanitarian micro-topics) clearly outside the focus with no broad hook: set "skip": true.
-- When skip is true, still return the object with index but leave post_topic empty.
+{profile_block}
+Relevance & priority rules:
+- Propose post topics ONLY for articles that clearly fit the user's INTERESTS above OR have obvious broad tech/business/finance appeal.
+- Push down / skip BORING items: niche or local stories (e.g. "3G rollout in one country"), obscure regional/military/humanitarian micro-topics, and routine press releases with no broad hook.
+- For such off-focus items set "skip": true (still return the object with its index, leave post_topic empty).
+- Favor the genuinely important and interesting: big deals, funding, launches, regulation, market moves, strategic shifts.
 """
 
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -1184,9 +1305,9 @@ For EACH article below, read the BODY (not only the title) and propose a conscio
 {focus_block}
 Rules:
 - post_topic: 5–12 words — the real story worth posting, not a headline paraphrase.
-- angle: one sentence — what the post should focus on (tension, stakes, non-obvious fact, open question).
+- angle: one sentence — WHY this matters to a tech/business/finance reader (the stakes, the non-obvious implication, who wins/loses), not a summary.
 - hook: one concrete detail from the body (number, quote, name, claim) that grounds the topic. Empty string if none.
-- skip: true if this article is outside export focus and not worth posting (niche academic with no audience hook).
+- skip: true if this article is off-focus or boring per the rules above (niche/local/routine with no broad hook).
 - Do NOT invent facts. If the body is thin, still prefer body over title.
 - Prefer second-order meaning over the lede when the body supports it.
 - {lang_line}
