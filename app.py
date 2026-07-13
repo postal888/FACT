@@ -2707,12 +2707,16 @@ def generate_article_topics_route():
         # show imp/fit badges. Reuses the focus scorer (cached, so cheap).
         try:
             arts = load_articles(str(rtf_path))
-            idxs = [t.get("index") for t in topics if isinstance(t.get("index"), int)]
+            idxs = [
+                t.get("article_index")
+                for t in topics
+                if isinstance(t.get("article_index"), int)
+            ]
             if idxs:
                 from twitter_poster import score_articles_by_focus
                 sc = score_articles_by_focus(arts, idxs, search_context)
                 for t in topics:
-                    s = sc.get(t.get("index"))
+                    s = sc.get(t.get("article_index"))
                     if s:
                         t["importance"] = s["importance"]
                         t["interest_fit"] = s["interest_fit"]

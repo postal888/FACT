@@ -2126,6 +2126,36 @@ def _resolve_article_pairs(
             meta = topic_map.get(i) or {}
             add_pair(i, a, meta)
 
+    # Safety net: strict selection resolved NOTHING (e.g. topics were generated
+    # against a different/older export file, so both index and title miss).
+    # Rather than dead-end with 0 drafts, fall back to any in-range selected
+    # indices, then to the head of the file, so the user still gets output.
+    if not pairs:
+        try:
+            print(
+                "[drafts] strict resolve = 0 pairs — темы не сошлись с файлом по индексам/заголовкам; "
+                "включаю фолбэк-подбор",
+                flush=True,
+            )
+        except Exception:
+            pass
+        if selected_indices:
+            for raw_idx in selected_indices:
+                if len(pairs) >= max_articles:
+                    break
+                try:
+                    idx = int(raw_idx)
+                except (TypeError, ValueError):
+                    continue
+                if idx in by_idx and idx not in seen:
+                    add_pair(idx, by_idx[idx], topic_map.get(idx) or {})
+        for i, a in enumerate(all_articles):
+            if len(pairs) >= max_articles:
+                break
+            if i in seen:
+                continue
+            add_pair(i, a, topic_map.get(i) or {})
+
     return pairs
 
 
