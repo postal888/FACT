@@ -1295,6 +1295,136 @@ Include every INDEX exactly once."""
     return scores
 
 
+def _topic_text(t: dict) -> str:
+    """Combined comparable text for a generated topic (title + topic + angle)."""
+    return " ".join([
+        (t.get("title") or ""),
+        (t.get("post_topic") or ""),
+        (t.get("angle") or ""),
+    ]).strip()
+
+
+def _topic_quality(t: dict) -> tuple:
+    """Higher is better when picking the survivor of a duplicate story group."""
+    has_hook = 1 if (t.get("hook") or "").strip() else 0
+    has_url = 1 if (t.get("url") or "").strip() else 0
+    return (has_hook, has_url, len(t.get("angle") or ""), len(t.get("post_topic") or ""))
+
+
+def dedup_topics_by_story(
+    topics: list[dict],
+    *,
+    sim_threshold: float = 0.34,
+    use_llm: bool = True,
+    model: str = "claude-opus-4-5",
+) -> list[dict]:
+    """Collapse topics that cover the SAME underlying story (across sources).
+
+    Two-stage:
+      1) Cheap pre-grouping by title/topic token similarity to form candidate
+         clusters (union-find style). This alone catches obvious same-title dups.
+      2) LLM confirmation on the whole set (broad grouping: same event/story even
+         if the angle differs slightly) to catch cross-source dups that share few
+         literal tokens. Falls back to stage-1 grouping if no API key / error.
+
+    Keeps ONE best topic per story (see _topic_quality) and preserves input order.
+    Never raises: on any failure returns the input unchanged.
+    """
+    if not topics or len(topics) < 2:
+        return topics
+
+    n = len(topics)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    # Stage 1: token-similarity pre-grouping on title+topic.
+    norm = [_norm_title(_topic_text(t)) for t in topics]
+    toks = [_title_tokens(nx) for nx in norm]
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _jaccard(toks[i], toks[j]) >= sim_threshold:
+                union(i, j)
+
+    # Stage 2: LLM confirmation across the full set (broad, same-story grouping).
+    if use_llm and os.getenv("ANTHROPIC_API_KEY") and n <= 60:
+        try:
+            import json as _json
+            import re as _re
+            import anthropic
+
+            lines = []
+            for i, t in enumerate(topics):
+                lines.append(
+                    f"[{i}] title: {t.get('title','')}\n"
+                    f"    topic: {t.get('post_topic','')}\n"
+                    f"    source: {t.get('source','')}"
+                )
+            prompt = (
+                "Below is a numbered list of proposed social-media post topics.\n"
+                "Group together the items that cover the SAME underlying story or "
+                "event, even if they come from different sources or frame it from a "
+                "slightly different angle (e.g. the same lawsuit, the same deal, the "
+                "same product launch reported twice). Group broadly: if a reader "
+                "would see two posts as 'the same news', put them together.\n"
+                "Do NOT group items that are merely on the same broad theme but are "
+                "genuinely different events.\n\n"
+                + "\n".join(lines)
+                + "\n\nReturn a JSON array of groups ONLY, each group a list of the "
+                "item numbers that are the same story. Include every number exactly "
+                "once (singletons as one-element lists). No markdown.\n"
+                'Example: [[0,3],[1],[2,4,5]]'
+            )
+            client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+            r = client.messages.create(
+                model=model,
+                max_tokens=1200,
+                temperature=0.1,
+                system="You output only a raw JSON array of arrays of integers.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = r.content[0].text.strip()
+            match = _re.search(r"\[[\s\S]*\]", raw)
+            if match:
+                groups = _json.loads(match.group(0))
+                for g in groups:
+                    idxs = [int(x) for x in g if isinstance(x, (int, float, str))
+                            and str(x).lstrip("-").isdigit() and 0 <= int(x) < n]
+                    for k in idxs[1:]:
+                        union(idxs[0], k)
+        except Exception:
+            pass  # keep stage-1 grouping
+
+    # Collect groups, keep the best topic per group, preserve first-seen order.
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+
+    kept_positions: list[int] = []
+    for members in groups.values():
+        best = max(members, key=lambda i: _topic_quality(topics[i]))
+        kept_positions.append(best)
+    kept_positions.sort()
+
+    deduped = [topics[i] for i in kept_positions]
+    dropped = n - len(deduped)
+    if dropped:
+        try:
+            print(f"[dedup-topics] {n} → {len(deduped)} (схлопнуто дублей: {dropped})", flush=True)
+        except Exception:
+            pass
+    return deduped
+
+
 def generate_article_topics(
     rtf_path: str,
     selected_indices: list | None = None,
@@ -1408,6 +1538,9 @@ Include every INDEX from the input exactly once."""
                 "hook": (t.get("hook") or "")[:200],
             })
 
+    # Collapse topics that cover the same underlying story (across sources),
+    # keeping the single best one per story. Fail-soft: returns input on error.
+    results = dedup_topics_by_story(results)
     return results
 
 
