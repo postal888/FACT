@@ -662,6 +662,30 @@ SHORT FORMAT — strict (when not using bullet-brief mode):
 - NO numbered lists. At most 2–3 short paragraphs plus optional punchline.
 """
 
+# Hard platform limits (characters). Twitter/X is a hard publish limit.
+PLATFORM_CHAR_LIMIT = {"twitter": 280, "telegram": 4096}
+
+
+def _norm_platform(platform) -> str:
+    p = (platform or "").strip().lower()
+    if p in ("x", "twitter/x", "tweet"):
+        return "twitter"
+    return p or "telegram"
+
+
+def _twitter_hard_rule(limit: int = 280) -> str:
+    """Injected when the target platform is Twitter — a HARD length constraint."""
+    aim = max(200, limit - 30)
+    return (
+        f"PLATFORM: Twitter/X. HARD LIMIT: the ENTIRE post — including spaces, "
+        f"punctuation, source name and any URL — MUST be {limit} characters or fewer. "
+        f"This is a publishing limit, not a suggestion: a longer post is rejected. "
+        f"Aim for about {aim} characters to leave a safety margin. "
+        f"Count as you write. If it does not fit, cut adjectives, background and the "
+        f"weaker half of the point — never exceed the limit. One tight thought beats a "
+        f"truncated one."
+    )
+
 
 def _source_link_rules(include_link: bool) -> str:
     if include_link:
@@ -933,6 +957,17 @@ def _build_system_prompt(params: dict) -> str:
         5: "Thread-length: comprehensive post covering context, event, scale, who's affected, what it means. Max 1000 chars.",
     }
     length_str = length_map.get(length, length_map[1])
+
+    # Twitter has a HARD 280-char publish limit. When targeting Twitter, force the
+    # ultra-concise length regardless of the slider and append the hard-limit rule,
+    # so "short format" posts actually fit and are not rejected at publish time.
+    platform = _norm_platform(params.get("platform"))
+    twitter_rule = ""
+    if platform == "twitter":
+        limit = PLATFORM_CHAR_LIMIT["twitter"]
+        length_str = length_map[1] if length > 2 else length_str
+        twitter_rule = "\n" + _twitter_hard_rule(limit)
+
     numbers_str = _numbers_instruction(numbers)
     link_str = _source_link_rules(include_link)
 
@@ -947,7 +982,7 @@ def _build_system_prompt(params: dict) -> str:
 
 {_lang_instruction(lang)}
 Stay fully in this persona's voice. Do not mix styles.
-{length_str}
+{length_str}{twitter_rule}
 {numbers_str}"""
 
     prompt = CINICO_BASE + f"""
@@ -957,7 +992,7 @@ Stay fully in this persona's voice. Do not mix styles.
 {SHORT_FORMAT_RULES}
 Cynicism level: {cynicism}/10. {"Be extremely cynical and sardonic." if cynicism >= 8 else "Be moderately cynical." if cynicism >= 5 else "Keep mild irony, stay factual."}
 Harshness level: {harsh}/10. {"Be ruthless and cutting, no mercy." if harsh >= 8 else "Be direct but not brutal." if harsh >= 5 else "Stay measured and analytical."}
-{length_str}
+{length_str}{twitter_rule}
 Analysis depth: {depth}/10. {"Go deep — expose systemic patterns, second-order effects, who benefits, who loses." if depth >= 7 else "Surface observation is fine." if depth <= 3 else "Show one non-obvious angle or hidden incentive."}
 {numbers_str}
 {NO_META_RULES}
@@ -1108,6 +1143,49 @@ def _max_tokens_for_params(params: dict) -> int:
     return {1: 350, 2: 450, 3: 600, 4: 900, 5: 1300}.get(length, 400)
 
 
+def _fit_twitter(text: str, params: dict, limit: int = 280) -> str:
+    """Safety net: if a Twitter-bound draft exceeds the hard limit, ask the model
+    to compress it to <= limit while keeping the core point and voice. One retry;
+    on error/still-too-long, returns the best available text (never raises)."""
+    if _norm_platform(params.get("platform")) != "twitter":
+        return text
+    if len(text or "") <= limit:
+        return text
+    try:
+        import anthropic
+        client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+        lang = params.get("lang", "en")
+        lang_names = {"en": "English", "ru": "Russian", "ua": "Ukrainian"}
+        aim = max(200, limit - 30)
+        r = client.messages.create(
+            model="claude-opus-4-5",
+            max_tokens=400,
+            temperature=0.4,
+            system=(
+                "You compress social posts to fit Twitter/X. Keep the author's voice, "
+                "the concrete facts and the punchline. Drop adjectives, background and "
+                "the weaker clause. Output ONLY the rewritten post, no commentary."
+            ),
+            messages=[{"role": "user", "content": (
+                f"Rewrite this post in {lang_names.get(lang, lang)} so the ENTIRE text "
+                f"is {limit} characters or fewer (aim ~{aim}). Keep it a single cohesive "
+                f"post, no bullets. Preserve the main fact and the closing take.\n\n"
+                f"POST ({len(text)} chars):\n{text}"
+            )}],
+        )
+        out = _sanitize_meta_draft(r.content[0].text.strip())
+        if out and len(out) <= limit:
+            try:
+                print(f"[twitter-fit] {len(text)} → {len(out)} chars", flush=True)
+            except Exception:
+                pass
+            return out
+        # If still too long, keep the shorter of the two candidates.
+        return out if (out and len(out) < len(text)) else text
+    except Exception:
+        return text
+
+
 def generate_tweet_draft_claude(article: dict, params: dict) -> str:
     import anthropic
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
@@ -1120,7 +1198,8 @@ def generate_tweet_draft_claude(article: dict, params: dict) -> str:
         messages=[{"role": "user", "content": prompt}],
         temperature=0.85,
     )
-    return _sanitize_meta_draft(_enforce_numbers_policy(r.content[0].text.strip(), params.get("numbers", 1)))
+    draft = _sanitize_meta_draft(_enforce_numbers_policy(r.content[0].text.strip(), params.get("numbers", 1)))
+    return _fit_twitter(draft, params)
 
 
 def generate_tweet_draft_gpt(article: dict, params: dict) -> str:
@@ -1137,10 +1216,11 @@ def generate_tweet_draft_gpt(article: dict, params: dict) -> str:
             {"role": "user", "content": prompt},
         ],
     )
-    return _sanitize_meta_draft(_enforce_numbers_policy(
+    draft = _sanitize_meta_draft(_enforce_numbers_policy(
         r.choices[0].message.content.strip(),
         params.get("numbers", 1),
     ))
+    return _fit_twitter(draft, params)
 
 
 def _focus_profile() -> dict:

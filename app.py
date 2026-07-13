@@ -1620,6 +1620,9 @@ def _rpa_generate_drafts(
         "persona": wf.get("persona") or "neutral",
         "post_format": post_format,
         "include_link": bool(writer.get("includeLink", False)),
+        "platform": _normalize_platform(
+            wf.get("defaultPlatform") or pipeline.get("default_platform")
+        ),
     }
 
     search_context = _export_search_context(wf)
@@ -2634,6 +2637,7 @@ def generate_drafts():
         "persona":  data.get("persona", "neutral"),
         "post_format": data.get("post_format", "short"),
         "include_link": bool(data.get("include_link", False)),
+        "platform": _normalize_platform(data.get("platform")),
     }
     # Clamp numbers mode 0..2 (0 = no figures)
     params["numbers"] = max(0, min(2, params["numbers"]))

@@ -6319,6 +6319,7 @@
         file, max, cynicism, harsh, length, depth, numbers,
         ai_model: _aiModel, lang: _lang, persona: _persona,
         post_format: _postFormat,
+        platform: (_postFormat === 'brief' ? 'telegram' : (_platform || 'twitter')),
         include_link: !!document.getElementById('tw-include-link')?.checked,
       };
       if (selectedTopics.length) {
