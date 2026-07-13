@@ -1227,11 +1227,37 @@ def generate_tweet_draft_gpt(article: dict, params: dict) -> str:
     return _fit_twitter(draft, params)
 
 
+_FOCUS_CONFIG_PATH = Path(__file__).with_name("focus_config.json")
+
+
+def _load_focus_config_overrides() -> dict:
+    """UI-editable focus config (focus_config.json). Overrides .env FOCUS_* when a
+    key is present. Missing file / bad JSON / missing keys → fall back to env.
+    Only keys that are actually present override; absent keys keep env defaults.
+    """
+    import json as _json
+    try:
+        if _FOCUS_CONFIG_PATH.exists():
+            data = _json.loads(_FOCUS_CONFIG_PATH.read_text("utf-8"))
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
 def _focus_profile() -> dict:
-    """User content focus from env: what's interesting vs boring for prioritization."""
-    interests = (os.getenv("FOCUS_INTERESTS") or "").strip()
-    boring = (os.getenv("FOCUS_BORING") or "").strip()
-    return {"interests": interests, "boring": boring}
+    """User content focus: what's interesting vs boring for prioritization.
+    UI config (focus_config.json) takes precedence over .env FOCUS_INTERESTS/BORING.
+    """
+    ov = _load_focus_config_overrides()
+    interests = ov.get("interests")
+    if interests is None:
+        interests = os.getenv("FOCUS_INTERESTS") or ""
+    boring = ov.get("boring")
+    if boring is None:
+        boring = os.getenv("FOCUS_BORING") or ""
+    return {"interests": str(interests).strip(), "boring": str(boring).strip()}
 
 
 def _env_float(name: str, default: float) -> float:
@@ -1252,13 +1278,38 @@ def _env_bool(name: str, default: bool) -> bool:
     return default
 
 
+def _clamp(v, lo, hi, default):
+    """Coerce to float and clamp; fall back to default on garbage."""
+    try:
+        return max(lo, min(hi, float(v)))
+    except (TypeError, ValueError):
+        return default
+
+
 def focus_ranking_config() -> dict:
-    """Tunable ranking weights from env (see .env FOCUS_* keys)."""
+    """Tunable ranking weights. UI config (focus_config.json) overrides .env FOCUS_*;
+    each override is validated/clamped, missing keys fall back to env then defaults.
+    """
+    ov = _load_focus_config_overrides()
+    w_imp = _env_float("FOCUS_WEIGHT_IMPORTANCE", 0.5)
+    w_int = _env_float("FOCUS_WEIGHT_INTEREST", 0.5)
+    penalty = _env_float("FOCUS_BORING_PENALTY", 3.0)
+    drop = _env_bool("FOCUS_DROP_BORING", True)
+
+    if "w_importance" in ov:
+        w_imp = _clamp(ov["w_importance"], 0.0, 1.0, w_imp)
+    if "w_interest" in ov:
+        w_int = _clamp(ov["w_interest"], 0.0, 1.0, w_int)
+    if "boring_penalty" in ov:
+        penalty = _clamp(ov["boring_penalty"], 0.0, 10.0, penalty)
+    if "drop_boring" in ov:
+        drop = bool(ov["drop_boring"])
+
     return {
-        "w_importance": _env_float("FOCUS_WEIGHT_IMPORTANCE", 0.5),
-        "w_interest": _env_float("FOCUS_WEIGHT_INTEREST", 0.5),
-        "boring_penalty": _env_float("FOCUS_BORING_PENALTY", 3.0),
-        "drop_boring": _env_bool("FOCUS_DROP_BORING", True),
+        "w_importance": w_imp,
+        "w_interest": w_int,
+        "boring_penalty": penalty,
+        "drop_boring": drop,
     }
 
 

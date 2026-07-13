@@ -83,6 +83,10 @@ _publisher_stack_lock = threading.Lock()
 _drafts_file = BASE_DIR / "drafts.json"
 _drafts_lock = threading.Lock()
 
+# Focus/prioritization config editable from the UI (overrides .env FOCUS_* when set).
+_focus_config_file = BASE_DIR / "focus_config.json"
+_focus_config_lock = threading.Lock()
+
 _pipelines_file = BASE_DIR / "pipelines.json"
 _pipelines_lock = threading.Lock()
 DEFAULT_PIPELINE_ID = "default"
@@ -218,6 +222,57 @@ def _save_drafts(drafts: list) -> None:
         )
     except Exception:
         pass
+
+
+# Whitelist of keys the UI may persist into focus_config.json.
+_FOCUS_CONFIG_KEYS = {
+    "w_importance", "w_interest", "boring_penalty", "drop_boring",
+    "interests", "boring",
+}
+
+
+def _load_focus_config() -> dict:
+    """Raw UI overrides stored on disk (may be a subset of keys). {} if none."""
+    if _focus_config_file.exists():
+        try:
+            data = json.loads(_focus_config_file.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {k: v for k, v in data.items() if k in _FOCUS_CONFIG_KEYS}
+        except Exception:
+            pass
+    return {}
+
+
+def _save_focus_config(cfg: dict) -> None:
+    with _focus_config_lock:
+        try:
+            clean = {k: v for k, v in (cfg or {}).items() if k in _FOCUS_CONFIG_KEYS}
+            _focus_config_file.write_text(
+                json.dumps(clean, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception:
+            pass
+
+
+def _effective_focus_config() -> dict:
+    """Resolved config the pipeline actually uses (UI override → env → default),
+    plus a per-key `source` map so the UI can show what's driving each value.
+    """
+    from twitter_poster import focus_ranking_config, _focus_profile
+    ranking = focus_ranking_config()
+    profile = _focus_profile()
+    overrides = _load_focus_config()
+    eff = {
+        "w_importance": ranking["w_importance"],
+        "w_interest": ranking["w_interest"],
+        "boring_penalty": ranking["boring_penalty"],
+        "drop_boring": ranking["drop_boring"],
+        "interests": profile["interests"],
+        "boring": profile["boring"],
+    }
+    source = {k: ("ui" if k in overrides else "env") for k in eff}
+    return {"config": eff, "overrides": overrides, "source": source}
 
 
 def _twitter_length_error(text: str, platform: str) -> str | None:
@@ -3047,6 +3102,48 @@ def clear_drafts():
     with _drafts_lock:
         _save_drafts([])
     return jsonify({"ok": True})
+
+
+@app.route("/focus-config", methods=["GET"])
+def get_focus_config():
+    """Return the effective focus config (UI override → env → default) + sources."""
+    return jsonify(_effective_focus_config())
+
+
+@app.route("/focus-config", methods=["PUT"])
+def put_focus_config():
+    """Persist UI focus overrides. Numbers are clamped; blank interests/boring
+    fall back to .env. Signature-based score cache auto-invalidates on change.
+    """
+    data = request.json or {}
+    cfg = {}
+
+    def _num(key, lo, hi):
+        if key in data and data[key] is not None and data[key] != "":
+            try:
+                cfg[key] = max(lo, min(hi, float(data[key])))
+            except (TypeError, ValueError):
+                pass
+
+    _num("w_importance", 0.0, 1.0)
+    _num("w_interest", 0.0, 1.0)
+    _num("boring_penalty", 0.0, 10.0)
+    if "drop_boring" in data:
+        cfg["drop_boring"] = bool(data["drop_boring"])
+    if "interests" in data and data["interests"] is not None:
+        cfg["interests"] = str(data["interests"]).strip()
+    if "boring" in data and data["boring"] is not None:
+        cfg["boring"] = str(data["boring"]).strip()
+
+    _save_focus_config(cfg)
+    return jsonify({"ok": True, **_effective_focus_config()})
+
+
+@app.route("/focus-config", methods=["DELETE"])
+def reset_focus_config():
+    """Drop UI overrides so the pipeline falls back to .env FOCUS_* values."""
+    _save_focus_config({})
+    return jsonify({"ok": True, **_effective_focus_config()})
 
 
 @app.route("/publisher-stack", methods=["GET"])

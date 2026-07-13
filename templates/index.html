@@ -2615,6 +2615,14 @@
       gap: 6px;
     }
 
+    details.focus-settings > summary::-webkit-details-marker { display: none; }
+    details.focus-settings[open] .focus-caret { transform: rotate(90deg); }
+    details.focus-settings summary:hover { background: var(--surface-3); }
+    details.focus-settings code {
+      font-size: 10px; padding: 1px 4px; border-radius: 4px;
+      background: var(--surface-3); color: var(--muted-2);
+    }
+
     /* Export grid — search + settings side by side on wide */
     .export-grid {
       display: grid;
@@ -3297,6 +3305,93 @@
         </div>
       </div>
       <div id="tw-topics-list"></div>
+      <!-- Приоритизация по фокусу (веса) -->
+      <details id="focus-settings" class="focus-settings" style="margin-top:14px;border:1px solid var(--border);border-radius:var(--radius);background:var(--surface-2);overflow:hidden">
+        <summary style="list-style:none;cursor:pointer;padding:10px 14px;display:flex;align-items:center;gap:10px;font-size:12px;font-weight:600;color:var(--text);user-select:none">
+          <span style="display:inline-flex;transition:transform .2s" class="focus-caret">›</span>
+          Приоритизация по фокусу
+          <span id="focus-settings-badge" style="margin-left:auto;font-size:10px;font-weight:600;padding:1px 8px;border-radius:8px;background:var(--surface-3);color:var(--muted-2)">–</span>
+        </summary>
+        <div style="padding:4px 14px 16px;border-top:1px solid var(--border)">
+          <div style="font-size:10px;color:var(--muted);margin:10px 0 14px;line-height:1.5">
+            Настраивает, как ранжируются статьи перед генерацией тем. Сохраняется на сервере и
+            переопределяет переменные <code>FOCUS_*</code> из .env. Пустые поля интересов/скучного
+            — значение берётся из .env.
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px 18px">
+            <!-- Вес важности -->
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:flex;justify-content:space-between">
+                Вес важности <span id="lbl-fw-imp">0.50</span>
+              </label>
+              <input type="range" id="fw-importance" min="0" max="1" step="0.05" value="0.5"
+                oninput="onFocusInput('importance')" style="width:100%">
+              <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted)">
+                <span>игнор</span><span>максимум</span>
+              </div>
+            </div>
+
+            <!-- Вес интересов -->
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:flex;justify-content:space-between">
+                Вес интересов <span id="lbl-fw-int">0.50</span>
+              </label>
+              <input type="range" id="fw-interest" min="0" max="1" step="0.05" value="0.5"
+                oninput="onFocusInput('interest')" style="width:100%">
+              <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted)">
+                <span>игнор</span><span>максимум</span>
+              </div>
+            </div>
+
+            <!-- Штраф за скучное -->
+            <div>
+              <label style="font-size:11px;color:var(--muted);display:flex;justify-content:space-between">
+                Штраф за скучное <span id="lbl-fw-pen">3.0</span>
+              </label>
+              <input type="range" id="fw-penalty" min="0" max="10" step="0.5" value="3"
+                oninput="onFocusInput('penalty')" style="width:100%">
+              <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--muted)">
+                <span>нет</span><span>жёстко</span>
+              </div>
+            </div>
+
+            <!-- Отбрасывать скучное -->
+            <div style="display:flex;flex-direction:column;justify-content:center">
+              <label style="font-size:11px;color:var(--muted);display:flex;align-items:center;gap:8px;cursor:pointer">
+                <input type="checkbox" id="fw-drop-boring" checked
+                  onchange="onFocusInput('drop')" style="width:auto;margin:0">
+                Отбрасывать скучные статьи
+              </label>
+              <div style="font-size:10px;color:var(--muted);margin-top:4px;line-height:1.4">
+                Иначе только понижаются в ранге.
+              </div>
+            </div>
+          </div>
+
+          <div style="margin-top:16px">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:5px">
+              Интересно (темы в приоритет)
+            </label>
+            <input type="text" id="fw-interests" placeholder="напр.: AI-чипы, робототехника, сделки M&A"
+              oninput="onFocusInput('text')" style="width:100%">
+          </div>
+          <div style="margin-top:10px">
+            <label style="font-size:11px;color:var(--muted);display:block;margin-bottom:5px">
+              Скучно (понижать / отбрасывать)
+            </label>
+            <input type="text" id="fw-boring" placeholder="напр.: криптоскам, слухи о знаменитостях"
+              oninput="onFocusInput('text')" style="width:100%">
+          </div>
+
+          <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
+            <span id="focus-save-status" style="font-size:10px;color:var(--muted)"></span>
+            <button type="button" class="btn btn-ghost btn-sm" style="margin-left:auto"
+              onclick="resetFocusConfig()">Сбросить к .env</button>
+          </div>
+        </div>
+      </details>
+
       <div id="tw-topics-footer" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:none;align-items:center;gap:10px;flex-wrap:wrap">
         <span style="font-size: 11px;color:var(--muted-2)">Выбрано статей:</span>
         <span id="tw-selected-count" style="font-size: 14px;font-weight:600">0</span>
@@ -3880,6 +3975,7 @@
     restoreTcExportState();
     setupExportsList();
     updatePublisherMeta();
+    loadFocusConfig();
     fetch('/automation/status', { credentials: 'same-origin' }).then(r => r.json()).then(d => {
       if (d.running) {
         _automationUiRunning = true;
@@ -5887,6 +5983,104 @@
     const n = _articleTopics.filter((_, i) => _articleTopicsChecked[i]).length;
     const el = document.getElementById('tw-article-topics-count');
     if (el) el.textContent = n;
+  }
+
+  // ===== Приоритизация по фокусу: UI весов (focus_config.json) =====
+  let _focusSaveTimer = null;
+  let _focusSource = {};  // per-key: 'ui' | 'env'
+
+  function _fw(id) { return document.getElementById(id); }
+
+  function applyFocusConfig(cfg, source) {
+    if (!cfg) return;
+    _focusSource = source || {};
+    const imp = _fw('fw-importance'), int = _fw('fw-interest'), pen = _fw('fw-penalty');
+    if (imp) { imp.value = cfg.w_importance; updateRangeFill(imp); }
+    if (int) { int.value = cfg.w_interest; updateRangeFill(int); }
+    if (pen) { pen.value = cfg.boring_penalty; updateRangeFill(pen); }
+    const drop = _fw('fw-drop-boring');
+    if (drop) drop.checked = !!cfg.drop_boring;
+    const ints = _fw('fw-interests'), bor = _fw('fw-boring');
+    if (ints) ints.value = cfg.interests || '';
+    if (bor) bor.value = cfg.boring || '';
+    _fw('lbl-fw-imp').textContent = Number(cfg.w_importance).toFixed(2);
+    _fw('lbl-fw-int').textContent = Number(cfg.w_interest).toFixed(2);
+    _fw('lbl-fw-pen').textContent = Number(cfg.boring_penalty).toFixed(1);
+    updateFocusBadge();
+  }
+
+  function updateFocusBadge() {
+    const badge = _fw('focus-settings-badge');
+    if (!badge) return;
+    const vals = Object.values(_focusSource || {});
+    const anyUi = vals.some(v => v === 'ui');
+    if (anyUi) {
+      badge.textContent = 'UI';
+      badge.style.background = 'var(--green-tint)';
+      badge.style.color = 'var(--green)';
+    } else {
+      badge.textContent = '.env';
+      badge.style.background = 'var(--surface-3)';
+      badge.style.color = 'var(--muted-2)';
+    }
+  }
+
+  async function loadFocusConfig() {
+    try {
+      const r = await fetch('/focus-config', { credentials: 'same-origin' });
+      if (!r.ok) return;
+      const d = await r.json();
+      applyFocusConfig(d.config, d.source);
+    } catch (e) { /* soft-fail: sliders keep defaults */ }
+  }
+
+  function onFocusInput(which) {
+    // Live label update on slider drag.
+    if (which === 'importance') _fw('lbl-fw-imp').textContent = Number(_fw('fw-importance').value).toFixed(2);
+    if (which === 'interest')   _fw('lbl-fw-int').textContent = Number(_fw('fw-interest').value).toFixed(2);
+    if (which === 'penalty')    _fw('lbl-fw-pen').textContent = Number(_fw('fw-penalty').value).toFixed(1);
+    ['fw-importance','fw-interest','fw-penalty'].forEach(id => { const el=_fw(id); if(el) updateRangeFill(el); });
+    const status = _fw('focus-save-status');
+    if (status) { status.textContent = 'изменено…'; status.style.color = 'var(--muted)'; }
+    clearTimeout(_focusSaveTimer);
+    _focusSaveTimer = setTimeout(saveFocusConfig, 700);
+  }
+
+  async function saveFocusConfig() {
+    const payload = {
+      w_importance: parseFloat(_fw('fw-importance').value),
+      w_interest: parseFloat(_fw('fw-interest').value),
+      boring_penalty: parseFloat(_fw('fw-penalty').value),
+      drop_boring: _fw('fw-drop-boring').checked,
+      interests: _fw('fw-interests').value,
+      boring: _fw('fw-boring').value,
+    };
+    const status = _fw('focus-save-status');
+    try {
+      const r = await fetch('/focus-config', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify(payload),
+      });
+      const d = await r.json();
+      if (d.source) { _focusSource = d.source; updateFocusBadge(); }
+      if (status) { status.textContent = 'сохранено ✓'; status.style.color = 'var(--green)'; }
+    } catch (e) {
+      if (status) { status.textContent = 'ошибка сохранения'; status.style.color = 'var(--red)'; }
+    }
+  }
+
+  async function resetFocusConfig() {
+    const status = _fw('focus-save-status');
+    try {
+      const r = await fetch('/focus-config', { method: 'DELETE', credentials: 'same-origin' });
+      const d = await r.json();
+      applyFocusConfig(d.config, d.source);
+      if (status) { status.textContent = 'сброшено к .env ✓'; status.style.color = 'var(--green)'; }
+    } catch (e) {
+      if (status) { status.textContent = 'ошибка сброса'; status.style.color = 'var(--red)'; }
+    }
   }
 
   // №10 Show whether real focus prioritization ran or a fallback kicked in.
