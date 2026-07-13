@@ -79,6 +79,10 @@ threading.Thread(target=_tweet_scheduler_loop, daemon=True).start()
 _publisher_stack_file = BASE_DIR / "publisher_stack.json"
 _publisher_stack_lock = threading.Lock()
 
+# №5 Server-side draft persistence so drafts survive page reloads / restarts.
+_drafts_file = BASE_DIR / "drafts.json"
+_drafts_lock = threading.Lock()
+
 _pipelines_file = BASE_DIR / "pipelines.json"
 _pipelines_lock = threading.Lock()
 DEFAULT_PIPELINE_ID = "default"
@@ -193,6 +197,27 @@ def _save_publisher_stack(stack: list) -> None:
         json.dumps(stack, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+
+
+def _load_drafts() -> list:
+    if _drafts_file.exists():
+        try:
+            data = json.loads(_drafts_file.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return data
+        except Exception:
+            pass
+    return []
+
+
+def _save_drafts(drafts: list) -> None:
+    try:
+        _drafts_file.write_text(
+            json.dumps(drafts, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
 
 
 def _twitter_length_error(text: str, platform: str) -> str | None:
@@ -2995,6 +3020,33 @@ def post_telegram_route():
         return jsonify(result)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/drafts", methods=["GET"])
+def get_drafts():
+    """№5 Return persisted drafts so the UI can restore them after reload."""
+    with _drafts_lock:
+        return jsonify({"drafts": _load_drafts()})
+
+
+@app.route("/drafts", methods=["PUT"])
+def put_drafts():
+    """№5 Replace the whole draft set (UI syncs edits/translations here)."""
+    data = request.json or {}
+    drafts = data.get("drafts")
+    if not isinstance(drafts, list):
+        return jsonify({"error": "drafts required"}), 400
+    with _drafts_lock:
+        _save_drafts(drafts)
+    return jsonify({"ok": True, "count": len(drafts)})
+
+
+@app.route("/drafts", methods=["DELETE"])
+def clear_drafts():
+    """№5 Clear all persisted drafts."""
+    with _drafts_lock:
+        _save_drafts([])
+    return jsonify({"ok": True})
 
 
 @app.route("/publisher-stack", methods=["GET"])

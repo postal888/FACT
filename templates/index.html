@@ -5889,6 +5889,43 @@
     if (el) el.textContent = n;
   }
 
+  // №10 Show whether real focus prioritization ran or a fallback kicked in.
+  function renderFocusStatus(fs) {
+    const meta = document.getElementById('tw-article-topics-meta');
+    if (!meta || !fs || !fs.status) return;
+    const REASON = {
+      no_api_key: 'нет API-ключа', no_profile: 'не задан FOCUS_INTERESTS',
+      no_scores: 'скоринг не вернул оценок', error: 'ошибка скоринга',
+      ok: '', unknown: '',
+    };
+    let badge = '';
+    if (fs.status === 'active') {
+      badge = `<span title="Приоритизация по фокусу активна (оценено ${fs.scored||0}/${fs.total||0})" style="margin-left:8px;font-size:10px;font-weight:600;padding:1px 7px;border-radius:8px;background:rgba(63,185,80,0.15);color:var(--green,#3fb950)">фокус ✓</span>`;
+    } else if (fs.status === 'fallback') {
+      const why = REASON[fs.reason] || fs.reason || '';
+      badge = `<span title="Приоритизация отключена — фолбэк на Jaccard${why ? ' (' + why + ')' : ''}" style="margin-left:8px;font-size:10px;font-weight:600;padding:1px 7px;border-radius:8px;background:rgba(210,153,34,0.18);color:var(--amber,#d29922)">фокус: фолбэк${why ? ' · ' + why : ''}</span>`;
+    }
+    if (badge) meta.insertAdjacentHTML('beforeend', badge);
+  }
+
+  // №10 Render imp/fit/boring badges from focus scores when present.
+  function focusBadges(t) {
+    if (t == null) return '';
+    const has = (v) => v !== undefined && v !== null && v !== '';
+    const parts = [];
+    if (has(t.importance)) {
+      parts.push(`<span title="Важность 0–10" style="display:inline-block;font-size:10px;font-weight:600;padding:1px 6px;border-radius:8px;background:rgba(56,139,253,0.15);color:var(--sky)">imp ${t.importance}</span>`);
+    }
+    if (has(t.interest_fit)) {
+      parts.push(`<span title="Соответствие интересам 0–10" style="display:inline-block;font-size:10px;font-weight:600;padding:1px 6px;border-radius:8px;background:rgba(63,185,80,0.15);color:var(--green,#3fb950)">fit ${t.interest_fit}</span>`);
+    }
+    if (t.boring === true) {
+      parts.push(`<span title="Помечено как скучное/вне фокуса" style="display:inline-block;font-size:10px;font-weight:600;padding:1px 6px;border-radius:8px;background:rgba(139,148,158,0.18);color:var(--muted-2)">boring</span>`);
+    }
+    if (!parts.length) return '';
+    return `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:6px">${parts.join('')}</div>`;
+  }
+
   function renderArticleTopics() {
     const panel = document.getElementById('flow-article-topics');
     const list = document.getElementById('tw-article-topics-list');
@@ -5920,6 +5957,7 @@
             <div style="font-size:13px;font-weight:500;line-height:1.35">${escHtml(t.post_topic)}</div>
             <div style="font-size:11px;color:var(--muted);margin-top:4px;line-height:1.45">${escHtml(t.angle || '')}</div>
             ${hook}
+            ${focusBadges(t)}
             <div style="font-size:10px;color:var(--muted-2);margin-top:6px;line-height:1.35">
               ${src}оригинал: ${escHtml(t.title || '')}
             </div>
@@ -6008,6 +6046,7 @@
       _articleTopicsChecked = {};
       _articleTopics.forEach((_, i) => { _articleTopicsChecked[i] = true; });
       renderArticleTopics();
+      renderFocusStatus(d.focus_status);
       setModuleProgress('tw-at', { done: true, label: `${_articleTopics.length} тем постов` });
       if (status) status.style.display = 'none';
       savePipelineState();
@@ -6369,6 +6408,7 @@
 
       _drafts = d.drafts || [];
       renderDrafts(_drafts);
+      persistDrafts();
       document.getElementById('tw-drafts-wrap').style.display = 'block';
       const sendBarDone = document.getElementById('tw-send-publisher-bar');
       if (sendBarDone) sendBarDone.style.display = 'flex';
@@ -6446,6 +6486,13 @@
     const defaultPlat = _postFormat === 'brief' ? 'telegram' : (_platform || 'twitter');
     const primaryLang = _lang || 'en';
     const primaryLabel = DRAFT_LANG_LABELS[primaryLang] || primaryLang.toUpperCase();
+    // №10 Map article_index → focus scores from the topics so drafts can badge.
+    const scoreByIdx = {};
+    (_articleTopics || []).forEach(t => {
+      if (t && t.article_index != null && (t.importance != null || t.interest_fit != null)) {
+        scoreByIdx[t.article_index] = t;
+      }
+    });
     list.innerHTML = drafts.map((d, i) => `
       <div class="tw-draft-card" id="tw-card-${i}">
         <div class="draft-meta">
@@ -6453,6 +6500,7 @@
             ${escHtml(d.title.slice(0, 80))}${d.title.length > 80 ? '…' : ''}
             ${d.source ? ' · ' + escHtml(d.source) : ''}
             ${d.date ? ' · ' + escHtml(d.date) : ''}
+            ${focusBadges((d.importance != null || d.interest_fit != null) ? d : scoreByIdx[d.article_index])}
           </span>
           <span style="display:inline-flex;gap:6px;align-items:center">
             <button onclick="translateOne(${i})" id="tw-trbtn-${i}"
@@ -6510,6 +6558,41 @@
 
   // Read current DOM edits (text, translation, platform, checkboxes) back into _drafts
   // so re-rendering after a delete does not lose in-place edits or translations.
+  // №5 Persist drafts to the server so they survive page reloads / restarts.
+  let _persistTimer = null;
+  async function persistDrafts() {
+    try {
+      await fetch('/drafts', {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ drafts: _drafts || [] }),
+      });
+    } catch (e) { /* offline / non-fatal */ }
+  }
+  function persistDraftsSoon() {
+    // Debounce rapid edits (typing, translate-all) into one save.
+    if (_persistTimer) clearTimeout(_persistTimer);
+    _persistTimer = setTimeout(() => { syncDraftsFromDOM(); persistDrafts(); }, 800);
+  }
+
+  async function loadDraftsFromServer() {
+    try {
+      const r = await fetch('/drafts');
+      const d = await r.json();
+      if (Array.isArray(d.drafts) && d.drafts.length) {
+        _drafts = d.drafts;
+        renderDrafts(_drafts);
+        const wrap = document.getElementById('tw-drafts-wrap');
+        if (wrap) wrap.style.display = 'block';
+        const sendBar = document.getElementById('tw-send-publisher-bar');
+        if (sendBar) sendBar.style.display = 'flex';
+        const trAll = document.getElementById('tw-btn-translate-all');
+        if (trAll) trAll.style.display = 'block';
+        if (typeof updateSendPublisherHint === 'function') updateSendPublisherHint();
+      }
+    } catch (e) { /* non-fatal */ }
+  }
+
   function syncDraftsFromDOM() {
     _drafts.forEach((d, i) => {
       const enTa = document.getElementById(`tw-text-${i}`);
@@ -6538,9 +6621,11 @@
       document.getElementById('tw-drafts-list').innerHTML = '';
       document.getElementById('tw-drafts-wrap').style.display = 'none';
       updateSendPublisherHint();
+      persistDrafts();
       return;
     }
     renderDrafts(_drafts);
+    persistDrafts();
   }
 
   function clearDrafts() {
@@ -6550,6 +6635,7 @@
     document.getElementById('tw-drafts-list').innerHTML = '';
     document.getElementById('tw-drafts-wrap').style.display = 'none';
     updateSendPublisherHint();
+    fetch('/drafts', { method: 'DELETE' }).catch(() => {});
   }
 
   function updateCharCount(i) {
@@ -8234,6 +8320,9 @@
         if (sendBar) sendBar.style.display = 'none';
         const draftsList = document.getElementById('tw-drafts-list');
         if (draftsList) draftsList.innerHTML = '';
+        // №5 Pipeline context had no drafts — fall back to the authoritative
+        // server store (survives localStorage clears / other browsers / restarts).
+        loadDraftsFromServer();
       }
 
       updatePublisherWorkspace();
