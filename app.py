@@ -1725,10 +1725,21 @@ def _analyze_topics_file(
         raise RuntimeError("No articles after source filter")
 
     sample = articles[:500]
-    if depth >= 7:
-        titles = [f"{i}. [{a.get('source', '')[:40]}] {a['title'][:100]}" for i, a in sample]
-    else:
-        titles = [f"{i}. {a['title'][:100]}" for i, a in sample]
+
+    def _lead(a: dict, n: int = 200) -> str:
+        # First ~n chars of body as a single line — disambiguates clickbait or
+        # empty titles ("Special Report") so clusters and focus align better.
+        body = (a.get("body") or "").strip().replace("\n", " ")
+        return body[:n]
+
+    titles = []
+    for i, a in sample:
+        lead = _lead(a)
+        if depth >= 7:
+            head = f"{i}. [{a.get('source', '')[:40]}] {a['title'][:100]}"
+        else:
+            head = f"{i}. {a['title'][:100]}"
+        titles.append(f"{head}\n    — {lead}" if lead else head)
     titles_text = "\n".join(titles)
     param_block = _topics_cluster_instructions(
         depth, theme, news_weight, max_topics, themes=themes,
@@ -1755,7 +1766,7 @@ Cluster them into up to {max_topics} most significant topics/themes.
 Clustering parameters:
 {param_block}
 
-Article titles:
+Articles (index. title — lead snippet). Use BOTH the title and the lead to judge what each story is really about:
 {titles_text}
 
 Rules:

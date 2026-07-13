@@ -1511,6 +1511,113 @@ def dedup_topics_by_story(
     return deduped
 
 
+def _article_text_for_dedup(art: dict) -> str:
+    """Title + lead (first ~250 chars of body) for story-level comparison."""
+    title = (art.get("title") or "").strip()
+    lead = (art.get("body") or "").strip()[:250]
+    return f"{title}\n{lead}".strip()
+
+
+def dedup_articles_by_story(
+    pairs: list[tuple],
+    *,
+    sim_threshold: float = 0.30,
+    use_llm: bool = True,
+    model: str = MODEL_UTIL,
+) -> list[tuple]:
+    """Collapse (index, article) pairs that cover the SAME story BEFORE topic
+    generation, so duplicates never cost an opus/util call and never occupy a
+    top-N slot. Compares title + lead. Keeps the best article per story
+    (_article_quality). Two-stage (token sim + LLM), fail-soft, order-preserving.
+    """
+    if not pairs or len(pairs) < 2:
+        return pairs
+
+    n = len(pairs)
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[max(ra, rb)] = min(ra, rb)
+
+    texts = [_article_text_for_dedup(a) for _, a in pairs]
+    toks = [_title_tokens(_norm_title(t)) for t in texts]
+    for i in range(n):
+        for j in range(i + 1, n):
+            if _jaccard(toks[i], toks[j]) >= sim_threshold:
+                union(i, j)
+
+    if use_llm and os.getenv("ANTHROPIC_API_KEY") and n <= 60:
+        try:
+            import json as _json
+            import re as _re
+            import anthropic
+
+            lines = []
+            for i, (_, a) in enumerate(pairs):
+                lead = (a.get("body") or "").strip()[:160]
+                lines.append(
+                    f"[{i}] title: {a.get('title','')}\n"
+                    f"    source: {a.get('source','')}\n"
+                    f"    lead: {lead}"
+                )
+            prompt = (
+                "Below is a numbered list of news articles (title + lead).\n"
+                "Group together items that report the SAME underlying story or "
+                "event, even from different sources or with a slightly different "
+                "angle (same lawsuit, same deal, same launch reported twice). Group "
+                "broadly: if a reader would call them 'the same news', group them.\n"
+                "Do NOT group items that are merely on the same broad theme but are "
+                "genuinely different events.\n\n"
+                + "\n".join(lines)
+                + "\n\nReturn a JSON array of groups ONLY, each group a list of item "
+                "numbers that are the same story. Every number exactly once. No markdown.\n"
+                'Example: [[0,3],[1],[2,4,5]]'
+            )
+            client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+            r = anthropic_call(
+                client, model=model, max_tokens=1200, temperature=0.1,
+                system="You output only a raw JSON array of arrays of integers.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = r.content[0].text.strip()
+            match = _re.search(r"\[[\s\S]*\]", raw)
+            if match:
+                for g in _json.loads(match.group(0)):
+                    idxs = [int(x) for x in g if str(x).lstrip("-").isdigit()
+                            and 0 <= int(x) < n]
+                    for k in idxs[1:]:
+                        union(idxs[0], k)
+        except Exception:
+            pass
+
+    groups: dict[int, list[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+
+    kept: list[int] = []
+    for members in groups.values():
+        best = max(members, key=lambda i: _article_quality(pairs[i][1]))
+        kept.append(best)
+    kept.sort()
+
+    deduped = [pairs[i] for i in kept]
+    dropped = n - len(deduped)
+    if dropped:
+        try:
+            print(f"[dedup-articles] {n} → {len(deduped)} (схлопнуто дублей до генерации: {dropped})", flush=True)
+        except Exception:
+            pass
+    return deduped
+
+
 def generate_article_topics(
     rtf_path: str,
     selected_indices: list | None = None,
@@ -1539,6 +1646,10 @@ def generate_article_topics(
     pairs = pairs[: max(1, min(int(max_articles), 60))]
     if not pairs:
         raise ValueError("No articles selected")
+
+    # Collapse same-story duplicates BEFORE the expensive per-article topic
+    # generation, so dupes don't cost LLM calls or occupy top-N slots.
+    pairs = dedup_articles_by_story(pairs)
 
     lang_line = {
         "en": "Write post_topic, angle, and hook in English.",
@@ -1625,9 +1736,9 @@ Include every INDEX from the input exactly once."""
                 "hook": (t.get("hook") or "")[:200],
             })
 
-    # Collapse topics that cover the same underlying story (across sources),
-    # keeping the single best one per story. Fail-soft: returns input on error.
-    results = dedup_topics_by_story(results)
+    # Story dedup already ran on the articles up front; keep only a cheap
+    # similarity-based safety net here (no extra LLM call).
+    results = dedup_topics_by_story(results, use_llm=False)
     return results
 
 
