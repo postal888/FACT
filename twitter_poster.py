@@ -1277,6 +1277,99 @@ def _focus_prompt_block(search_context: str = "") -> str:
     return "User content focus:\n" + "\n".join(f"- {l}" for l in lines) + "\n"
 
 
+# --- Focus scoring: degradation status + persistent cache (№4, №6) ---
+_FOCUS_CACHE_PATH = Path(__file__).with_name("focus_score_cache.json")
+_FOCUS_CACHE_MAX = 4000  # cap entries so the file can't grow unbounded
+
+# Last focus-ranking outcome, surfaced to the UI so the user can tell whether
+# real prioritization ran or a silent fallback kicked in.
+#   status: "active" | "fallback"
+#   reason: short machine tag (no_api_key | no_profile | no_scores | error | ok)
+LAST_FOCUS_STATUS: dict = {"status": "unknown", "reason": "", "scored": 0, "total": 0}
+
+
+def get_focus_status() -> dict:
+    """Return a copy of the last focus-ranking status for the API/UI."""
+    return dict(LAST_FOCUS_STATUS)
+
+
+def _set_focus_status(status: str, reason: str, scored: int = 0, total: int = 0) -> None:
+    LAST_FOCUS_STATUS.update(
+        {"status": status, "reason": reason, "scored": scored, "total": total}
+    )
+    if status == "fallback":
+        try:
+            print(f"[focus-rank] SKIPPED: {reason} — фолбэк на Jaccard", flush=True)
+        except Exception:
+            pass
+
+
+def _focus_cache_signature(search_context: str) -> str:
+    """Hash of everything that changes scores: focus profile + weights + context.
+    When the user edits FOCUS_* the signature changes and stale scores are ignored.
+    """
+    import hashlib
+    cfg = focus_ranking_config()
+    prof = _focus_profile()
+    payload = _json_dumps_safe({
+        "interests": prof.get("interests", ""),
+        "boring": prof.get("boring", ""),
+        "w_importance": cfg.get("w_importance"),
+        "w_interest": cfg.get("w_interest"),
+        "boring_penalty": cfg.get("boring_penalty"),
+        "ctx": (search_context or "")[:200],
+        "model": MODEL_UTIL,
+    })
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def _json_dumps_safe(obj) -> str:
+    import json as _json
+    try:
+        return _json.dumps(obj, sort_keys=True, ensure_ascii=False)
+    except Exception:
+        return str(obj)
+
+
+def _article_fingerprint(art: dict, sig: str) -> str:
+    """Per-article cache key: profile signature + title + source + body lead."""
+    import hashlib
+    title = (art.get("title") or "").strip().lower()
+    source = (art.get("source") or "").strip().lower()
+    lead = (art.get("body") or "").strip()[:250].lower()
+    return hashlib.sha1(f"{sig}|{title}|{source}|{lead}".encode("utf-8")).hexdigest()
+
+
+def _load_focus_cache() -> dict:
+    import json as _json
+    try:
+        if _FOCUS_CACHE_PATH.exists():
+            return _json.loads(_FOCUS_CACHE_PATH.read_text("utf-8")) or {}
+    except Exception:
+        pass
+    return {}
+
+
+def _save_focus_cache(cache: dict) -> None:
+    import json as _json
+    try:
+        if len(cache) > _FOCUS_CACHE_MAX:
+            # Drop oldest by insertion order (dicts preserve it).
+            for k in list(cache.keys())[: len(cache) - _FOCUS_CACHE_MAX]:
+                cache.pop(k, None)
+        _FOCUS_CACHE_PATH.write_text(
+            _json.dumps(cache, ensure_ascii=False), "utf-8"
+        )
+    except Exception:
+        pass
+
+
+def _rank_from_scored(entry: dict, cfg: dict) -> float:
+    return (entry["importance"] * cfg["w_importance"]
+            + entry["interest_fit"] * cfg["w_interest"]) - (
+            cfg["boring_penalty"] if entry["boring"] else 0.0)
+
+
 def score_articles_by_focus(
     articles: list[dict],
     indices: list[int],
@@ -1299,24 +1392,57 @@ def score_articles_by_focus(
     import anthropic
 
     if not os.getenv("ANTHROPIC_API_KEY") or not indices:
+        _set_focus_status("fallback", "no_api_key", 0, len(indices or []))
         return {}
 
     focus_block = _focus_prompt_block(search_context)
     if not focus_block:
         # No profile configured — nothing meaningful to score against.
+        _set_focus_status("fallback", "no_profile", 0, len(indices))
         return {}
 
     pairs = [(i, articles[i]) for i in indices if 0 <= i < len(articles)]
     if not pairs:
+        _set_focus_status("fallback", "no_valid_indices", 0, len(indices))
         return {}
 
     cfg = focus_ranking_config()
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     scores: dict[int, dict] = {}
-    batch_size = 10
 
-    for start in range(0, len(pairs), batch_size):
-        batch = pairs[start:start + batch_size]
+    # №4 Cache: reuse prior scores for articles unchanged under the current focus
+    # profile. fingerprint = profile-signature + title + source + lead.
+    sig = _focus_cache_signature(search_context)
+    cache = _load_focus_cache()
+    fp_by_idx: dict[int, str] = {}
+    to_score: list[tuple] = []
+    cache_hits = 0
+    for i, art in pairs:
+        fp = _article_fingerprint(art, sig)
+        fp_by_idx[i] = fp
+        hit = cache.get(fp)
+        if hit and all(k in hit for k in ("importance", "interest_fit", "boring")):
+            scores[i] = {
+                "importance": hit["importance"],
+                "interest_fit": hit["interest_fit"],
+                "boring": hit["boring"],
+                "rank": _rank_from_scored(hit, cfg),
+                "reason": (hit.get("reason") or "")[:120],
+            }
+            cache_hits += 1
+        else:
+            to_score.append((i, art))
+    if cache_hits:
+        try:
+            print(f"[focus-rank] cache: {cache_hits}/{len(pairs)} из кэша, считаю {len(to_score)}", flush=True)
+        except Exception:
+            pass
+
+    batch_size = 10
+    cache_dirty = False
+
+    for start in range(0, len(to_score), batch_size):
+        batch = to_score[start:start + batch_size]
         blocks = []
         for i, art in batch:
             body = (art.get("body") or "")[:1800]
@@ -1366,16 +1492,36 @@ Include every INDEX exactly once."""
                 rank = (imp * cfg["w_importance"] + fit * cfg["w_interest"]) - (
                     cfg["boring_penalty"] if boring else 0.0
                 )
+                reason = (t.get("reason") or "")[:120]
                 scores[idx] = {
                     "importance": imp,
                     "interest_fit": fit,
                     "boring": boring,
                     "rank": rank,
-                    "reason": (t.get("reason") or "")[:120],
+                    "reason": reason,
                 }
+                # №4 write raw scores to cache (rank is recomputed from weights,
+                # so it is intentionally NOT stored).
+                fp = fp_by_idx.get(idx)
+                if fp:
+                    cache[fp] = {
+                        "importance": imp,
+                        "interest_fit": fit,
+                        "boring": boring,
+                        "reason": reason,
+                    }
+                    cache_dirty = True
         except Exception:
             # Fail soft: skip this batch, caller falls back if scores end up empty.
             continue
+
+    if cache_dirty:
+        _save_focus_cache(cache)
+
+    if scores:
+        _set_focus_status("active", "ok", len(scores), len(pairs))
+    else:
+        _set_focus_status("fallback", "no_scores", 0, len(pairs))
 
     return scores
 

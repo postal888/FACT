@@ -1493,9 +1493,15 @@ def _rank_indices_by_relevance(
         from twitter_poster import score_articles_by_focus, focus_ranking_config
         scores = score_articles_by_focus(articles, indices, search_context)
         cfg = focus_ranking_config()
-    except Exception:
+    except Exception as e:
         scores = {}
         cfg = {"drop_boring": True}
+        try:
+            from twitter_poster import _set_focus_status
+            _set_focus_status("fallback", "error", 0, len(indices))
+            print(f"[focus-rank] SKIPPED: exception {e!r} — фолбэк на Jaccard", flush=True)
+        except Exception:
+            pass
 
     if scores:
         # Strict top ordering by combined rank; unscored indices keep original order at the tail.
@@ -2581,6 +2587,16 @@ def analyze_topics():
         return jsonify({"error": str(e), "trace": traceback.format_exc()[-500:]}), 500
 
 
+@app.route("/focus-status", methods=["GET"])
+def focus_status_route():
+    """№6 Expose the last focus-ranking outcome so the UI can badge active vs fallback."""
+    try:
+        from twitter_poster import get_focus_status
+        return jsonify(get_focus_status())
+    except Exception as e:
+        return jsonify({"status": "unknown", "reason": str(e)}), 200
+
+
 @app.route("/generate-article-topics", methods=["POST"])
 def generate_article_topics_route():
     """Read full articles and propose conscious post topics for selected cluster articles."""
@@ -2599,7 +2615,7 @@ def generate_article_topics_route():
     search_context = (data.get("search_context") or "").strip()
 
     try:
-        from twitter_poster import generate_article_topics
+        from twitter_poster import generate_article_topics, load_articles, get_focus_status
         topics = generate_article_topics(
             str(rtf_path),
             selected_indices=selected_indices,
@@ -2607,7 +2623,27 @@ def generate_article_topics_route():
             lang=lang,
             search_context=search_context,
         )
-        return jsonify({"article_topics": topics, "total": len(topics)})
+        # №10 Attach importance/interest_fit/boring to each topic so the UI can
+        # show imp/fit badges. Reuses the focus scorer (cached, so cheap).
+        try:
+            arts = load_articles(str(rtf_path))
+            idxs = [t.get("index") for t in topics if isinstance(t.get("index"), int)]
+            if idxs:
+                from twitter_poster import score_articles_by_focus
+                sc = score_articles_by_focus(arts, idxs, search_context)
+                for t in topics:
+                    s = sc.get(t.get("index"))
+                    if s:
+                        t["importance"] = s["importance"]
+                        t["interest_fit"] = s["interest_fit"]
+                        t["boring"] = s["boring"]
+        except Exception:
+            pass
+        return jsonify({
+            "article_topics": topics,
+            "total": len(topics),
+            "focus_status": get_focus_status(),
+        })
     except Exception as e:
         import traceback
         return jsonify({"error": str(e), "trace": traceback.format_exc()[-400:]}), 500
