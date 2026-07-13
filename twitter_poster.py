@@ -1816,11 +1816,12 @@ Relevance & priority rules:
 """
 
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-    results: list[dict] = []
     batch_size = 8
+    batches = [pairs[s:s + batch_size] for s in range(0, len(pairs), batch_size)]
 
-    for start in range(0, len(pairs), batch_size):
-        batch = pairs[start:start + batch_size]
+    def _process_batch(batch: list) -> list[dict]:
+        """Generate topics for one batch. Fail-soft: returns [] on error so one
+        bad batch never aborts the whole run (transient errors already retried)."""
         blocks = []
         for i, art in batch:
             body = (art.get("body") or "")[:3500]
@@ -1848,22 +1849,27 @@ Articles:
 Return a JSON array ONLY — no markdown fences:
 [{{"index":N,"post_topic":"...","angle":"...","hook":"...","skip":false}}]
 Include every INDEX from the input exactly once."""
+        try:
+            r = anthropic_call(
+                client,
+                model=MODEL_UTIL,
+                max_tokens=2500,
+                temperature=0.4,
+                system="You output only raw JSON arrays. No markdown, no explanation.",
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = r.content[0].text.strip()
+            match = _re.search(r"\[[\s\S]*\]", raw)
+            if not match:
+                print(f"[topics] батч вернул не-JSON, пропуск: {raw[:120]}", flush=True)
+                return []
+            batch_topics = _json.loads(match.group(0))
+        except Exception as e:
+            print(f"[topics] батч провален ({e!r}), пропуск", flush=True)
+            return []
 
-        r = anthropic_call(
-            client,
-            model=MODEL_UTIL,
-            max_tokens=2500,
-            temperature=0.4,
-            system="You output only raw JSON arrays. No markdown, no explanation.",
-            messages=[{"role": "user", "content": prompt}],
-        )
-        raw = r.content[0].text.strip()
-        match = _re.search(r"\[[\s\S]*\]", raw)
-        if not match:
-            raise ValueError(f"Claude returned non-JSON: {raw[:300]}")
-        batch_topics = _json.loads(match.group(0))
         by_idx = {int(t["index"]): t for t in batch_topics if "index" in t}
-
+        out = []
         for i, art in batch:
             t = by_idx.get(i, {})
             if t.get("skip") in (True, "true", 1, "1"):
@@ -1871,7 +1877,7 @@ Include every INDEX from the input exactly once."""
             post_topic = (t.get("post_topic") or "").strip()
             if not post_topic:
                 continue
-            results.append({
+            out.append({
                 "article_index": i,
                 "title": art.get("title", ""),
                 "source": art.get("source", ""),
@@ -1881,6 +1887,36 @@ Include every INDEX from the input exactly once."""
                 "angle": (t.get("angle") or "")[:280],
                 "hook": (t.get("hook") or "")[:200],
             })
+        return out
+
+    # №9 Run batches concurrently. Order is preserved by collecting per-batch
+    # results into slots, then flattening. Workers tunable via TOPIC_BATCH_WORKERS.
+    results: list[dict] = []
+    if len(batches) <= 1:
+        results = _process_batch(batches[0]) if batches else []
+    else:
+        try:
+            max_workers = int(os.getenv("TOPIC_BATCH_WORKERS", "4") or 4)
+        except Exception:
+            max_workers = 4
+        max_workers = max(1, min(max_workers, len(batches)))
+        from concurrent.futures import ThreadPoolExecutor
+        slots: list[list[dict]] = [[] for _ in batches]
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futs = {ex.submit(_process_batch, b): pos for pos, b in enumerate(batches)}
+            for fut in futs:
+                pos = futs[fut]
+                try:
+                    slots[pos] = fut.result()
+                except Exception as e:
+                    print(f"[topics] батч #{pos} исключение ({e!r})", flush=True)
+                    slots[pos] = []
+        for s in slots:
+            results.extend(s)
+        try:
+            print(f"[topics] {len(batches)} батчей параллельно (workers={max_workers}) → {len(results)} тем", flush=True)
+        except Exception:
+            pass
 
     # Story dedup already ran on the articles up front; keep only a cheap
     # similarity-based safety net here (no extra LLM call).
