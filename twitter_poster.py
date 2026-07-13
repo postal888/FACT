@@ -3,6 +3,8 @@ from pathlib import Path
 from dotenv import load_dotenv
 load_dotenv()
 
+from _llm import MODEL_WRITE, MODEL_UTIL, anthropic_call
+
 _COPYRIGHT_PATTERNS = [
   # Copyright 2026 MarketWatch, Inc. All Rights Reserved.
   re.compile(
@@ -1157,8 +1159,9 @@ def _fit_twitter(text: str, params: dict, limit: int = 280) -> str:
         lang = params.get("lang", "en")
         lang_names = {"en": "English", "ru": "Russian", "ua": "Ukrainian"}
         aim = max(200, limit - 30)
-        r = client.messages.create(
-            model="claude-opus-4-5",
+        r = anthropic_call(
+            client,
+            model=MODEL_UTIL,
             max_tokens=400,
             temperature=0.4,
             system=(
@@ -1191,8 +1194,9 @@ def generate_tweet_draft_claude(article: dict, params: dict) -> str:
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     system = _build_system_prompt(params)
     prompt = _build_user_prompt(article, params)
-    r = client.messages.create(
-        model="claude-opus-4-5",
+    r = anthropic_call(
+        client,
+        model=MODEL_WRITE,
         max_tokens=_max_tokens_for_params(params),
         system=system,
         messages=[{"role": "user", "content": prompt}],
@@ -1278,7 +1282,7 @@ def score_articles_by_focus(
     indices: list[int],
     search_context: str = "",
     *,
-    model: str = "claude-opus-4-5",
+    model: str = MODEL_UTIL,
 ) -> dict[int, dict]:
     """Score each article for importance + fit to the user's focus profile.
 
@@ -1339,7 +1343,8 @@ Return a JSON array ONLY — no markdown fences:
 [{{"index":N,"importance":0-10,"interest_fit":0-10,"boring":false,"reason":"..."}}]
 Include every INDEX exactly once."""
         try:
-            r = client.messages.create(
+            r = anthropic_call(
+                client,
                 model=model,
                 max_tokens=1500,
                 temperature=0.2,
@@ -1396,7 +1401,7 @@ def dedup_topics_by_story(
     *,
     sim_threshold: float = 0.34,
     use_llm: bool = True,
-    model: str = "claude-opus-4-5",
+    model: str = MODEL_UTIL,
 ) -> list[dict]:
     """Collapse topics that cover the SAME underlying story (across sources).
 
@@ -1465,7 +1470,8 @@ def dedup_topics_by_story(
                 'Example: [[0,3],[1],[2,4,5]]'
             )
             client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-            r = client.messages.create(
+            r = anthropic_call(
+                client,
                 model=model,
                 max_tokens=1200,
                 temperature=0.1,
@@ -1586,8 +1592,9 @@ Return a JSON array ONLY — no markdown fences:
 [{{"index":N,"post_topic":"...","angle":"...","hook":"...","skip":false}}]
 Include every INDEX from the input exactly once."""
 
-        r = client.messages.create(
-            model="claude-opus-4-5",
+        r = anthropic_call(
+            client,
+            model=MODEL_UTIL,
             max_tokens=2500,
             temperature=0.4,
             system="You output only raw JSON arrays. No markdown, no explanation.",
@@ -2026,8 +2033,9 @@ def refine_draft_post(
     else:
         import anthropic
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        r = client.messages.create(
-            model="claude-opus-4-5",
+        r = anthropic_call(
+            client,
+            model=MODEL_WRITE,
             max_tokens=max_tok,
             system=system,
             messages=[{"role": "user", "content": prompt}],

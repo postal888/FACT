@@ -11,6 +11,8 @@ import sys
 import threading
 import time
 import uuid
+
+from _llm import MODEL_WRITE, MODEL_UTIL, anthropic_call
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1765,8 +1767,9 @@ Rules:
 Return a JSON array ONLY — no commentary, no markdown fences:
 [{{"topic":"...","count":N,"article_indices":[...],"summary":"..."}}]"""
 
-    r = client.messages.create(
-        model="claude-opus-4-5",
+    r = anthropic_call(
+        client,
+        model=MODEL_UTIL,
         max_tokens=4000,
         messages=[{"role": "user", "content": prompt}],
         system="You output only raw JSON arrays. No markdown, no explanation, no code fences.",
@@ -2880,8 +2883,9 @@ def translate_text():
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-        r = client.messages.create(
-            model="claude-opus-4-5",
+        r = anthropic_call(
+            client,
+            model=MODEL_UTIL,
             max_tokens=400,
             system=(
                 "You are a translator for sharp, cynical social media posts written in the Cinico style "
