@@ -1392,6 +1392,7 @@ def _run_techcrunch_export_blocking(
     force_fresh: bool = False,
     exclude_published_pid: str | None = None,
     exclude_platform: str | None = None,
+    progress_cb=None,
 ) -> str:
     """RPA: mirror applyTechCrunchToTopics — full batch up to max, not checkbox subset."""
     from techcrunch_feed import fetch_page_body_for_url, save_articles_json
@@ -1456,18 +1457,33 @@ def _run_techcrunch_export_blocking(
         selected = list(articles)
     selected = selected[:max_articles]
 
+    total_sel = len(selected)
+    if callable(progress_cb):
+        try:
+            progress_cb(0, total_sel)
+        except Exception:
+            pass
     if fetch_full_body:
-        for article in selected:
+        for idx, article in enumerate(selected):
             url = (article.get("url") or "").strip()
             current = (article.get("body") or "").strip()
-            if not url:
-                continue
-            try:
-                page_body = fetch_page_body_for_url(url)
-                if len(page_body) > len(current):
-                    article["body"] = page_body[:8000]
-            except Exception:
-                pass
+            if url:
+                try:
+                    page_body = fetch_page_body_for_url(url)
+                    if len(page_body) > len(current):
+                        article["body"] = page_body[:8000]
+                except Exception:
+                    pass
+            if callable(progress_cb):
+                try:
+                    progress_cb(idx + 1, total_sel)
+                except Exception:
+                    pass
+    elif callable(progress_cb):
+        try:
+            progress_cb(total_sel, total_sel)
+        except Exception:
+            pass
 
     path = save_articles_json(
         selected,
@@ -2063,11 +2079,22 @@ def _execute_pipeline_automation(pipeline: dict, slot_key: str | None = None):
                 extra={"phase": "running", "attempt": attempt + 1, "force_fresh": force_fresh},
             )
             if source_mode == "techcrunch":
+                def _tc_progress(done_n, total_n):
+                    _set_pipeline_auto_status(
+                        pid, "export", ok=True,
+                        extra={
+                            "phase": "running",
+                            "attempt": attempt + 1,
+                            "tc_fetch_done": int(done_n),
+                            "tc_fetch_total": int(total_n),
+                        },
+                    )
                 filename = _run_techcrunch_export_blocking(
                     wf,
                     force_fresh=force_fresh,
                     exclude_published_pid=pid,
                     exclude_platform=default_platform,
+                    progress_cb=_tc_progress,
                 )
             else:
                 factiva_dom = wf.get("factivaDom") or {}

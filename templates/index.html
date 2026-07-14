@@ -2689,22 +2689,17 @@
   <div class="shell">
     <aside class="sidebar" aria-label="Навигация и архитектура">
       <nav class="rail" aria-label="Pipeline">
-        <a class="rail-link active" href="#sec-sources"><span class="step">00</span> Источники</a>
-        <a class="rail-link" href="#sec-tc-fetch"><span class="step">T1</span> Лента</a>
-        <a class="rail-link" href="#sec-tc-export"><span class="step">T2</span> Экспорт TC</a>
-        <a class="rail-link" href="#sec-search"><span class="step">01</span> Поиск</a>
-        <a class="rail-link" href="#sec-export"><span class="step">02</span> Экспорт</a>
-        <a class="rail-link" href="#sec-progress"><span class="step">03</span> Прогресс</a>
-        <a class="rail-link" href="#sec-history"><span class="step">04</span> История</a>
-        <a class="rail-link" href="#sec-topics"><span class="step">05</span> Генератор тем</a>
-        <a class="rail-link" href="#sec-writer"><span class="step">06</span> Писатель</a>
-        <a class="rail-link" href="#sec-publisher"><span class="step">07</span> Паблишер</a>
+        <a class="rail-link active" href="#sec-sources"><span class="step">01</span> Источники</a>
+        <a class="rail-link" href="#sec-tc-fetch"><span class="step">02</span> Экспорт</a>
+        <a class="rail-link" href="#sec-topics"><span class="step">03</span> Темы</a>
+        <a class="rail-link" href="#sec-writer"><span class="step">04</span> Черновики</a>
+        <a class="rail-link" href="#sec-publisher"><span class="step">05</span> Планирование</a>
       </nav>
 
       <div class="flow-diagram" aria-label="Архитектура пайплайна">
         <div class="flow-header">Пайплайн</div>
 
-        <div class="flow-phase">Источники</div>
+        <div class="flow-phase">01 · Источники</div>
         <a class="flow-node flow-node--fetch" href="#sec-sources" data-flow="sec-sources">
           <span class="flow-node-icon">◎</span>
           <span class="flow-node-body">
@@ -2714,7 +2709,7 @@
         </a>
         <div class="flow-wire" aria-hidden="true"></div>
 
-        <div class="flow-phase">Экспорт Crunch</div>
+        <div class="flow-phase">02 · Экспорт · TechCrunch</div>
         <a class="flow-node flow-node--fetch" href="#sec-tc-fetch" data-flow="sec-tc-fetch">
           <span class="flow-node-icon">◈</span>
           <span class="flow-node-body">
@@ -2732,7 +2727,7 @@
         </a>
         <div class="flow-wire" aria-hidden="true"></div>
 
-        <div class="flow-phase">Экспорт Factiva</div>
+        <div class="flow-phase">02 · Экспорт · Factiva</div>
         <a class="flow-node flow-node--fetch" href="#sec-search" data-flow="sec-search">
           <span class="flow-node-icon">⌕</span>
           <span class="flow-node-body">
@@ -2773,7 +2768,7 @@
           </span>
         </a>
 
-        <div class="flow-phase">Контент</div>
+        <div class="flow-phase">03 · Темы</div>
         <a class="flow-node flow-node--file" href="#flow-parse" data-flow="flow-parse">
           <span class="flow-node-icon">◫</span>
           <span class="flow-node-body">
@@ -2790,6 +2785,8 @@
           </span>
         </a>
         <div class="flow-wire" aria-hidden="true"></div>
+
+        <div class="flow-phase">04 · Черновики</div>
         <a class="flow-node flow-node--ai" href="#sec-writer" data-flow="sec-writer">
           <span class="flow-node-icon">✎</span>
           <span class="flow-node-body">
@@ -2814,6 +2811,8 @@
           </span>
         </a>
         <div class="flow-wire" aria-hidden="true"></div>
+
+        <div class="flow-phase">05 · Планирование</div>
         <a class="flow-node flow-node--out" href="#sec-publisher" data-flow="sec-publisher">
           <span class="flow-node-icon">▶</span>
           <span class="flow-node-body">
@@ -4007,9 +4006,13 @@
     ];
     const railLinks = document.querySelectorAll('.rail-link');
     const flowNodes = document.querySelectorAll('.flow-node');
-    const topicsFlowIds = new Set(['flow-filter', 'sec-topics']);
+    // 02 · Экспорт — обе ветки (TechCrunch + Factiva) подсвечивают один пункт навигации
+    const exportFlowIds = new Set([
+      'sec-tc-fetch', 'sec-tc-export', 'sec-search', 'sec-export', 'sec-progress', 'sec-history',
+    ]);
+    const topicsFlowIds = new Set(['flow-filter', 'flow-parse', 'sec-topics']);
     const writerFlowIds = new Set([
-      'flow-parse', 'flow-author', 'flow-refine', 'flow-translate', 'sec-writer',
+      'flow-author', 'flow-refine', 'flow-translate', 'sec-writer',
     ]);
 
     const obs = new IntersectionObserver(entries => {
@@ -4022,6 +4025,7 @@
       const railId = id === 'sec-publisher' ? 'sec-publisher'
         : writerFlowIds.has(id) ? 'sec-writer'
         : topicsFlowIds.has(id) ? 'sec-topics'
+        : exportFlowIds.has(id) ? 'sec-tc-fetch'
         : id;
       railLinks.forEach(l => l.classList.toggle('active', l.getAttribute('href') === '#' + railId));
       document.querySelectorAll('.card').forEach(c => c.classList.toggle('is-active', c.id === railId));
@@ -7391,7 +7395,10 @@
         ? `Просрочено ${due} · публикация по расписанию`
         : `В очереди ${pend} · публикация по расписанию`;
     } else if (st.step === 'done' && st.ok && st.scheduled > 0) {
-      label = `Авто: ${st.scheduled} постов в очереди`;
+      // Нет активных pending: st.scheduled — это счётчик ПРОШЛОГО прогона,
+      // а не текущая очередь. Не пишем «в очереди», иначе противоречит
+      // «Очередь пуста» ниже. Показываем как факт о последнем запуске.
+      label = `Последний авто-прогон: запланировано ${st.scheduled} · очередь пуста`;
     }
     if (!label) {
       if (_lastPubProgressLabel) {
@@ -8220,7 +8227,7 @@
         detail.textContent = parts.join(' · ');
       } else if (isDone) {
         const warn = st.warning ? ` · ${st.warning}` : '';
-        detail.textContent = `Готово: ${st.drafts || '?'} черновиков → ${st.scheduled || '?'} в очереди${warn}`;
+        detail.textContent = `Готово: ${st.drafts || '?'} черновиков → запланировано ${st.scheduled || '?'}${warn}`;
       } else if (isError) {
         detail.textContent = st.error || 'Ошибка автоматизации';
       } else {
@@ -8253,8 +8260,16 @@
 
     if (step === 'export') {
       if (_sourceMode === 'techcrunch') {
-        setModuleProgress('tc', { pct: -1, label: mod.label });
-        startModuleProgressTimer('tc', mod.label);
+        const done = Number(st.tc_fetch_done);
+        const total = Number(st.tc_fetch_total);
+        if (Number.isFinite(total) && total > 0 && Number.isFinite(done)) {
+          stopModuleProgressTimer && stopModuleProgressTimer('tc');
+          const pct = Math.min(100, Math.round((done / total) * 100));
+          setModuleProgress('tc', { pct, label: `${mod.label} · ${done}/${total}` });
+        } else {
+          setModuleProgress('tc', { pct: -1, label: mod.label });
+          startModuleProgressTimer('tc', mod.label);
+        }
       } else {
         toggleCard('sec-progress', true);
         setStatus('running');
@@ -8780,7 +8795,7 @@
     if (!p.auto_enabled && !_automationUiRunning) {
       if (st.step === 'done' && st.ok) {
         const warn = st.warning ? ` · ${st.warning}` : '';
-        el.textContent = `Последний запуск: ${st.drafts || '?'} → ${st.scheduled || '?'} в очереди${warn} · ${formatAutoStatusTime(st.at)}`;
+        el.textContent = `Последний запуск: ${st.drafts || '?'} → запланировано ${st.scheduled || '?'}${warn} · ${formatAutoStatusTime(st.at)}`;
         el.className = 'pipe-auto-status ok';
       } else {
         el.textContent = 'Автоматизация выключена';
@@ -8793,7 +8808,7 @@
       const platPart = plat ? ` · ${plat}` : '';
       const warn = st.warning ? ` ⚠ ${st.warning}` : '';
       const dup = st.skipped_duplicates ? ` · пропущено дублей: ${st.skipped_duplicates}` : '';
-      el.textContent = `Последний запуск: ${st.drafts || '?'} черновиков → ${st.scheduled || '?'} в очереди${platPart}${dup}${warn} · ${formatAutoStatusTime(st.at)}`;
+      el.textContent = `Последний запуск: ${st.drafts || '?'} черновиков → запланировано ${st.scheduled || '?'}${platPart}${dup}${warn} · ${formatAutoStatusTime(st.at)}`;
       el.className = 'pipe-auto-status ok';
     } else if (st.step === 'cancelled') {
       el.textContent = `Остановлено · ${formatAutoStatusTime(st.at)}`;
@@ -8921,11 +8936,19 @@
       }
       if (enabled) {
         startAutomationUiWatch();
+        // Immediate visual feedback so the toggle never looks «dead»
+        showAutomationConveyor(true);
+        const miniEl = document.getElementById('pipeline-auto-mini-status');
+        if (miniEl) miniEl.textContent = 'Запуск…';
+        const statusEl0 = document.getElementById('pipeline-auto-status');
+        if (statusEl0) { statusEl0.textContent = 'Запуск…'; statusEl0.className = 'pipe-auto-status'; }
         const started = await triggerPipelineAutoRun({ quiet: true, onCooldownForce: true });
         if (!started) {
+          showAutomationConveyor(false);
+          if (miniEl) miniEl.textContent = '';
           const el = document.getElementById('pipeline-auto-status');
           if (el) {
-            el.textContent = 'Не удалось запустить — нажмите «Запустить сейчас»';
+            el.textContent = 'Не удалось запустить сейчас — нажмите «Запустить сейчас»';
             el.className = 'pipe-auto-status err';
           }
         }
@@ -9022,6 +9045,13 @@
       }
       if (d.error) {
         if (!opts.quiet) alert(d.error);
+        else {
+          // Quiet mode: still surface the reason in the status line
+          const errEl = document.getElementById('pipeline-auto-status');
+          if (errEl) { errEl.textContent = d.error; errEl.className = 'pipe-auto-status err'; }
+          const miniErr = document.getElementById('pipeline-auto-mini-status');
+          if (miniErr) miniErr.textContent = '';
+        }
         return false;
       }
       showAutomationConveyor(true);
