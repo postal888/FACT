@@ -8948,8 +8948,12 @@
     const articleTopicsChk = document.getElementById('pipeline-auto-article-topics');
     const autoFields = document.getElementById('pipeline-auto-fields');
     const enabled = !!autoEn?.checked;
+    // Freeze the target window for the whole save: after the awaits below the
+    // user may already be on another window, and settings/auto-run must not
+    // leak into it.
+    const pidToSave = activePipelineId;
     if (autoFields) autoFields.classList.toggle('is-off', !enabled);
-    if (enabled) saveWorkflowContext(activePipelineId);
+    if (enabled) saveWorkflowContext(pidToSave);
     const exportTimes = parseExportTimesInput(exportTimesInp?.value || '');
     if (!exportTimes.length && (exportTimesInp?.value || '').trim()) {
       // Incomplete typing (e.g. "01:3") — don't overwrite server with garbage
@@ -8961,7 +8965,7 @@
     const runArticleTopics = !!articleTopicsChk?.checked;
 
     // Optimistic local update — prevents poll/render from reverting the field
-    const local = pipelines.find(x => x.id === activePipelineId);
+    const local = pipelines.find(x => x.id === pidToSave);
     if (local) {
       local.auto_enabled = enabled;
       local.auto_export_times = resolvedTimes;
@@ -8970,7 +8974,7 @@
     }
 
     try {
-      const r = await fetch(`/pipelines/${encodeURIComponent(activePipelineId)}`, {
+      const r = await fetch(`/pipelines/${encodeURIComponent(pidToSave)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
@@ -8984,7 +8988,7 @@
       const d = await r.json();
       if (d.error) { alert(d.error); return; }
       // Merge server response into local without clobbering in-progress edits
-      const idx = pipelines.findIndex(x => x.id === activePipelineId);
+      const idx = pipelines.findIndex(x => x.id === pidToSave);
       if (idx >= 0 && d && d.id) {
         const stillEditing = document.activeElement === exportTimesInp
           || document.activeElement === maxDraftsInp;
@@ -8999,12 +9003,18 @@
           pipelines[idx] = { ...pipelines[idx], ...d };
         }
       }
-      if (enabled) await syncWorkflowToServer(activePipelineId);
-      if (!opts.quiet) {
+      if (enabled) await syncWorkflowToServer(pidToSave);
+      if (!opts.quiet && activePipelineId === pidToSave) {
         renderPipelineTabs();
         renderPipelineWindowHeader();
-        renderPipelineAutoStatus(pipelines.find(x => x.id === activePipelineId));
-        renderPipelineAutoMini(pipelines.find(x => x.id === activePipelineId));
+        renderPipelineAutoStatus(pipelines.find(x => x.id === pidToSave));
+        renderPipelineAutoMini(pipelines.find(x => x.id === pidToSave));
+      }
+      if (enabled && activePipelineId !== pidToSave) {
+        // User switched away — the auto-run below works on the active window's
+        // DOM/context, so skip it for the frozen pid; the schedule still runs
+        // server-side.
+        return;
       }
       if (enabled) {
         startAutomationUiWatch();
@@ -9025,7 +9035,9 @@
           }
         }
       }
-      else if (!pipelines.find(x => x.id === activePipelineId)?.auto_enabled && _automationUiWatchTimer) {
+      else if (activePipelineId === pidToSave
+               && !pipelines.find(x => x.id === pidToSave)?.auto_enabled
+               && _automationUiWatchTimer) {
         clearInterval(_automationUiWatchTimer);
         _automationUiWatchTimer = null;
       }
@@ -9051,8 +9063,10 @@
     if (miniEl) miniEl.textContent = '';
   }
 
-  async function _postStopAuto(disableAuto, force) {
-    const r = await fetch(`/pipelines/${encodeURIComponent(activePipelineId)}/stop-auto`, {
+  async function _postStopAuto(pid, disableAuto, force) {
+    // pid is fixed by the caller: activePipelineId may change mid-flight
+    // (user switches window while we wait) and must NOT retarget the stop.
+    const r = await fetch(`/pipelines/${encodeURIComponent(pid)}/stop-auto`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
@@ -9071,7 +9085,7 @@
       statusEl.className = 'pipe-auto-status';
     }
     try {
-      const d = await _postStopAuto(disableAuto, false);
+      const d = await _postStopAuto(pidToStop, disableAuto, false);
       if (d.error) alert(d.error);
       if (disableAuto) {
         const autoEn = document.getElementById('pipeline-auto-enabled');
@@ -9088,8 +9102,8 @@
         sd = await sr.json();
       } catch (e) {}
       if (sd.running && (!sd.pipeline_id || sd.pipeline_id === pidToStop)) {
-        if (statusEl) statusEl.textContent = 'Принудительная остановка…';
-        await _postStopAuto(disableAuto, true);
+        if (statusEl && activePipelineId === pidToStop) statusEl.textContent = 'Принудительная остановка…';
+        await _postStopAuto(pidToStop, disableAuto, true);
         await new Promise(res => setTimeout(res, 600));
       }
     } catch (e) {
@@ -9099,31 +9113,37 @@
         const sr = await fetch('/automation/status?pipeline_id=' + encodeURIComponent(pidToStop), { credentials: 'same-origin' });
         const sd = await sr.json();
         const stillHere = !!sd.running && (!sd.pipeline_id || sd.pipeline_id === pidToStop);
+        // Only touch the shared UI if the user is still on the stopped window;
+        // otherwise we'd wipe the running-state of the window they switched to.
+        const uiHere = activePipelineId === pidToStop;
         if (!stillHere) {
-          _forceClearAutomationUi();
-          if (statusEl) { statusEl.textContent = 'Остановлено'; statusEl.className = 'pipe-auto-status'; }
+          if (uiHere) _forceClearAutomationUi();
+          if (statusEl && uiHere) { statusEl.textContent = 'Остановлено'; statusEl.className = 'pipe-auto-status'; }
         } else {
           // Last resort: force again and clear UI anyway
-          await _postStopAuto(disableAuto, true);
-          _forceClearAutomationUi();
-          if (statusEl) { statusEl.textContent = 'Остановлено (принудительно)'; statusEl.className = 'pipe-auto-status'; }
+          await _postStopAuto(pidToStop, disableAuto, true);
+          if (uiHere) _forceClearAutomationUi();
+          if (statusEl && uiHere) { statusEl.textContent = 'Остановлено (принудительно)'; statusEl.className = 'pipe-auto-status'; }
         }
       } catch (e) {
-        _forceClearAutomationUi();
+        if (activePipelineId === pidToStop) _forceClearAutomationUi();
       }
     }
   }
 
   async function triggerPipelineAutoRun(opts = {}) {
     if (!activePipelineId) return false;
-    saveWorkflowContext(activePipelineId);
-    await syncWorkflowToServer(activePipelineId, { force: true });
+    // Freeze the target window: a mid-flight window switch must not retarget
+    // the run (or the 409-recovery stop) to the newly active window.
+    const pidToRun = activePipelineId;
+    saveWorkflowContext(pidToRun);
+    await syncWorkflowToServer(pidToRun, { force: true });
     setPipelineAutoRunningUi(true);
     const statusEl = document.getElementById('pipeline-auto-status');
     if (statusEl) { statusEl.textContent = 'Запуск…'; statusEl.className = 'pipe-auto-status'; }
     try {
       const postRun = async (force) => {
-        const r = await fetch(`/pipelines/${encodeURIComponent(activePipelineId)}/run-auto`, {
+        const r = await fetch(`/pipelines/${encodeURIComponent(pidToRun)}/run-auto`, {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
@@ -9137,7 +9157,7 @@
 
       let { r, d } = await postRun(!!opts.force);
       if (d.error && r.status === 409) {
-        await fetch(`/pipelines/${encodeURIComponent(activePipelineId)}/stop-auto`, {
+        await fetch(`/pipelines/${encodeURIComponent(pidToRun)}/stop-auto`, {
           method: 'POST',
           credentials: 'same-origin',
           headers: { 'Content-Type': 'application/json' },
@@ -9161,8 +9181,8 @@
         return false;
       }
       showAutomationConveyor(true);
-      startAutomationFastPoll(activePipelineId);
-      if (!opts.quiet) await pollPipelineAutoUntilDone(activePipelineId);
+      startAutomationFastPoll(pidToRun);
+      if (!opts.quiet) await pollPipelineAutoUntilDone(pidToRun);
       return true;
     } catch (e) {
       if (!opts.quiet) alert('Ошибка: ' + e);
@@ -9170,7 +9190,7 @@
     } finally {
       if (opts.quiet) {
         try {
-          await refreshAutomationUi(activePipelineId);
+          await refreshAutomationUi(pidToRun);
         } catch (e) {
           setPipelineAutoRunningUi(false);
         }
