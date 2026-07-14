@@ -3992,11 +3992,13 @@
     updatePublisherMeta();
     loadFocusConfig();
     fetch('/automation/status', { credentials: 'same-origin' }).then(r => r.json()).then(d => {
-      if (d.running) {
+      const active = Array.isArray(d.active) ? d.active : [];
+      // Reflect UI only for the currently open window.
+      if (activePipelineId && active.includes(activePipelineId)) {
         _automationUiRunning = true;
         setPipelineAutoRunningUi(true);
         showAutomationConveyor(true);
-        if (d.pipeline_id) startAutomationFastPoll(d.pipeline_id);
+        startAutomationFastPoll(activePipelineId);
       }
     }).catch(() => {});
     startAutomationUiWatch();
@@ -8057,7 +8059,7 @@
     if (!pid) return;
     if (!opts.force) {
       try {
-        const sr = await fetch('/automation/status', { credentials: 'same-origin' });
+        const sr = await fetch('/automation/status?pipeline_id=' + encodeURIComponent(pid), { credentials: 'same-origin' });
         const sd = await sr.json();
         if (sd.running) return;
       } catch (e) {}
@@ -8192,6 +8194,7 @@
     _autoExportLogLines = logTail.length;
   }
   let _automationPollTimer = null;
+  let _automationPollPid = null;
 
   const AUTO_CONVEYOR_STEPS = [
     { id: 'export', label: 'Экспорт' },
@@ -8321,10 +8324,9 @@
     let running = !!runningHint;
     let sd = {};
     try {
-      const sr = await fetch('/automation/status', { credentials: 'same-origin' });
+      const sr = await fetch('/automation/status?pipeline_id=' + encodeURIComponent(pid || ''), { credentials: 'same-origin' });
       sd = await sr.json();
-      running = !!sd.running;
-      if (sd.pipeline_id && sd.pipeline_id !== pid) running = false;
+      running = !!sd.running && (!sd.pipeline_id || sd.pipeline_id === pid);
       if (running && sd.step === 'export' && _sourceMode !== 'techcrunch') {
         startAutomationExportStream();
       } else if (!running || sd.step !== 'export') {
@@ -8348,13 +8350,20 @@
   }
 
   function startAutomationFastPoll(pid) {
-    if (_automationPollTimer) return;
+    // Restart the poll if it is bound to a different window (window switch).
+    if (_automationPollTimer && _automationPollPid === pid) return;
+    if (_automationPollTimer) {
+      clearInterval(_automationPollTimer);
+      _automationPollTimer = null;
+    }
+    _automationPollPid = pid;
     _automationPollTimer = setInterval(async () => {
       if (!pid || pid !== activePipelineId) return;
       const { running, st } = await refreshAutomationUi(pid);
       if (!running) {
         clearInterval(_automationPollTimer);
         _automationPollTimer = null;
+        _automationPollPid = null;
         await pullAutomationWorkflowUi(pid, { expandTopics: true, expandWriter: true });
         if (st.step === 'done' && st.ok) syncPublisherQueueProgress();
       }
@@ -8366,6 +8375,7 @@
       clearInterval(_automationPollTimer);
       _automationPollTimer = null;
     }
+    _automationPollPid = null;
   }
 
   async function pullAutomationWorkflowUi(pid, opts) {

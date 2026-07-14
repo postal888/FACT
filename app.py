@@ -185,10 +185,41 @@ def _token_jaccard(a: str, b: str) -> float:
     return _jaccard(_title_tokens(a or ""), _title_tokens(b or ""))
 
 
-def _load_publisher_stack() -> list:
-    if _publisher_stack_file.exists():
+def _publisher_stack_file_for(pid: str) -> Path:
+    import re
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", (pid or DEFAULT_PIPELINE_ID)) or DEFAULT_PIPELINE_ID
+    return BASE_DIR / f"publisher_stack_{safe}.json"
+
+
+def _migrate_legacy_publisher_stack() -> None:
+    """One-time: split the old single publisher_stack.json into per-pid files."""
+    if not _publisher_stack_file.exists():
+        return
+    try:
+        data = json.loads(_publisher_stack_file.read_text(encoding="utf-8"))
+    except Exception:
+        data = None
+    if isinstance(data, list) and data:
+        buckets: dict[str, list] = {}
+        for x in data:
+            it = _normalize_stack_item(x)
+            buckets.setdefault(it.get("pipeline") or DEFAULT_PIPELINE_ID, []).append(it)
+        for pid, items in buckets.items():
+            f = _publisher_stack_file_for(pid)
+            if not f.exists():
+                f.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+    # Retire the legacy file so it is not read again.
+    try:
+        _publisher_stack_file.rename(_publisher_stack_file.with_suffix(".json.bak"))
+    except Exception:
+        pass
+
+
+def _load_publisher_stack_pid(pid: str) -> list:
+    f = _publisher_stack_file_for(pid)
+    if f.exists():
         try:
-            data = json.loads(_publisher_stack_file.read_text(encoding="utf-8"))
+            data = json.loads(f.read_text(encoding="utf-8"))
             if isinstance(data, list):
                 return [_normalize_stack_item(x) for x in data]
         except Exception:
@@ -196,11 +227,45 @@ def _load_publisher_stack() -> list:
     return []
 
 
+def _publisher_stack_pids() -> list[str]:
+    pids = set()
+    for f in BASE_DIR.glob("publisher_stack_*.json"):
+        name = f.name[len("publisher_stack_"):-len(".json")]
+        if name:
+            pids.add(name)
+    return sorted(pids)
+
+
+def _load_publisher_stack() -> list:
+    """Merged view of every window's queue (per-pid files).
+
+    Kept as a single combined list so all existing call sites keep working;
+    physical storage is split into publisher_stack_<pid>.json per window.
+    """
+    _migrate_legacy_publisher_stack()
+    merged: list = []
+    for pid in _publisher_stack_pids():
+        merged.extend(_load_publisher_stack_pid(pid))
+    return merged
+
+
 def _save_publisher_stack(stack: list) -> None:
-    _publisher_stack_file.write_text(
-        json.dumps(stack, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    """Persist a merged stack back into per-pid files.
+
+    Rewrites every known window file so deletions propagate; a window that
+    lost all its items is written as an empty list."""
+    buckets: dict[str, list] = {}
+    for x in stack:
+        it = _normalize_stack_item(x)
+        buckets.setdefault(it.get("pipeline") or DEFAULT_PIPELINE_ID, []).append(it)
+    # Ensure windows that became empty are cleared too.
+    for pid in _publisher_stack_pids():
+        buckets.setdefault(pid, [])
+    for pid, items in buckets.items():
+        _publisher_stack_file_for(pid).write_text(
+            json.dumps(items, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
 
 
 def _load_drafts() -> list:
@@ -490,47 +555,90 @@ threading.Thread(target=_publisher_scheduler_loop, daemon=True).start()
 # ── Pipeline automation (scheduled export → topics → drafts → publisher) ───
 
 MSK_OFFSET = timedelta(hours=3)
-_automation_lock = threading.Lock()
-_automation_running = False
-_automation_running_pid: str | None = None
-_automation_cancel = False
-_automation_subproc: subprocess.Popen | None = None
-_automation_subproc_lock = threading.Lock()
-_automation_log: deque[str] = deque(maxlen=120)
-_automation_log_lock = threading.Lock()
 EXPORT_SUBPROC_GRACE_SEC = 60
+MAX_PARALLEL_AUTO = 5
+
+# ── Per-pipeline automation registry ──────────────────────────────────────
+# Each window (pipeline) gets an independent run record. This replaces the old
+# global singleton state so several writers can run in parallel.
+_automation_lock = threading.RLock()   # guards _auto_runs registry mutations
+_auto_runs: dict[str, dict] = {}       # pid -> run record
+# Factiva export drives an external browser/subprocess — must run one at a time.
+_factiva_lock = threading.Lock()
 
 
 class AutomationCancelled(Exception):
     pass
 
 
-def _automation_log_clear() -> None:
-    with _automation_log_lock:
-        _automation_log.clear()
+class NoNewArticles(Exception):
+    """Feed has only already-published stories — soft-skip, not a hard failure."""
+    pass
 
 
-def _automation_log_push(line: str) -> None:
+def _new_run_record(pid: str) -> dict:
+    return {
+        "pid": pid,
+        "running": True,
+        "cancel": False,
+        "subproc": None,
+        "subproc_lock": threading.Lock(),
+        "log": deque(maxlen=120),
+        "log_lock": threading.Lock(),
+        "started_at": _utc_now(),
+    }
+
+
+def _get_run(pid: str) -> dict | None:
+    with _automation_lock:
+        return _auto_runs.get(pid)
+
+
+def _active_run_pids() -> list[str]:
+    with _automation_lock:
+        return [pid for pid, r in _auto_runs.items() if r.get("running")]
+
+
+def _automation_running_for(pid: str) -> bool:
+    r = _get_run(pid)
+    return bool(r and r.get("running"))
+
+
+def _automation_log_clear(pid: str) -> None:
+    r = _get_run(pid)
+    if not r:
+        return
+    with r["log_lock"]:
+        r["log"].clear()
+
+
+def _automation_log_push(pid: str, line: str) -> None:
     s = (line or "").rstrip()
     if not s:
         return
-    with _automation_log_lock:
-        _automation_log.append(s)
+    r = _get_run(pid)
+    if not r:
+        return
+    with r["log_lock"]:
+        r["log"].append(s)
 
 
-def _automation_log_tail(n: int = 12) -> list[str]:
-    with _automation_log_lock:
-        return list(_automation_log)[-max(1, n):]
+def _automation_log_tail(pid: str, n: int = 12) -> list[str]:
+    r = _get_run(pid)
+    if not r:
+        return []
+    with r["log_lock"]:
+        return list(r["log"])[-max(1, n):]
 
 
-def _drain_automation_subproc_stdout(proc: subprocess.Popen) -> None:
+def _drain_automation_subproc_stdout(pid: str, proc: subprocess.Popen) -> None:
     try:
         if proc.stdout:
             for line in proc.stdout:
                 s = (line or "").rstrip()
                 if not s:
                     continue
-                _automation_log_push(s)
+                _automation_log_push(pid, s)
                 try:
                     _job_queue.put_nowait(s)
                 except Exception:
@@ -539,16 +647,21 @@ def _drain_automation_subproc_stdout(proc: subprocess.Popen) -> None:
         pass
 
 
-def _set_automation_subproc(proc: subprocess.Popen | None) -> None:
-    global _automation_subproc
-    with _automation_subproc_lock:
-        _automation_subproc = proc
+def _set_automation_subproc(pid: str, proc: subprocess.Popen | None) -> None:
+    r = _get_run(pid)
+    if not r:
+        return
+    with r["subproc_lock"]:
+        r["subproc"] = proc
 
 
-def _kill_automation_subproc() -> None:
-    """Terminate the child process started by automation (e.g. factiva_agent)."""
-    with _automation_subproc_lock:
-        proc = _automation_subproc
+def _kill_automation_subproc(pid: str) -> None:
+    """Terminate the child process started by this pipeline's automation."""
+    r = _get_run(pid)
+    if not r:
+        return
+    with r["subproc_lock"]:
+        proc = r.get("subproc")
     if not proc or proc.poll() is not None:
         return
     try:
@@ -564,28 +677,24 @@ def _kill_automation_subproc() -> None:
         except Exception:
             pass
     finally:
-        _set_automation_subproc(None)
+        _set_automation_subproc(pid, None)
 
 
-class NoNewArticles(Exception):
-    """Feed has only already-published stories — soft-skip, not a hard failure."""
-    pass
-
-
-def _automation_subproc_alive() -> bool:
-    with _automation_subproc_lock:
-        proc = _automation_subproc
+def _automation_subproc_alive(pid: str) -> bool:
+    r = _get_run(pid)
+    if not r:
+        return False
+    with r["subproc_lock"]:
+        proc = r.get("subproc")
     return proc is not None and proc.poll() is None
 
 
-def _maybe_recover_stuck_automation(max_stale_sec: int = 90) -> bool:
-    """Clear zombie automation flag when subprocess is gone but running=True."""
-    global _automation_running, _automation_running_pid
-    if not _automation_running:
+def _maybe_recover_stuck_automation(pid: str, max_stale_sec: int = 90) -> bool:
+    """Clear zombie run flag for one pipeline when its subprocess is gone."""
+    if not _automation_running_for(pid):
         return False
-    if _automation_subproc_alive():
+    if _automation_subproc_alive(pid):
         return False
-    pid = _automation_running_pid
     stale = False
     if pid:
         with _pipelines_lock:
@@ -601,7 +710,6 @@ def _maybe_recover_stuck_automation(max_stale_sec: int = 90) -> bool:
             except ValueError:
                 age_sec = None
         if step == "export":
-            # Grace period: subprocess starts a moment after status is set.
             stale = age_sec is not None and age_sec >= EXPORT_SUBPROC_GRACE_SEC
         elif at:
             stale = age_sec is not None and age_sec >= max_stale_sec
@@ -611,35 +719,49 @@ def _maybe_recover_stuck_automation(max_stale_sec: int = 90) -> bool:
         stale = True
     if not stale:
         return False
-    if pid:
-        _set_pipeline_auto_status(
-            pid, "cancelled", ok=False,
-            error="Зависание — сброшено автоматически",
-        )
-    _end_automation_run()
+    _set_pipeline_auto_status(
+        pid, "cancelled", ok=False,
+        error="Зависание — сброшено автоматически",
+    )
+    _end_automation_run(pid)
     return True
 
 
-def _check_automation_cancel():
-    global _automation_cancel
-    if _automation_cancel:
+def _check_automation_cancel(pid: str):
+    r = _get_run(pid)
+    if r and r.get("cancel"):
         raise AutomationCancelled("Остановлено пользователем")
 
 
-def _begin_automation_run(pid: str) -> None:
-    global _automation_running, _automation_running_pid, _automation_cancel
-    _automation_cancel = False
-    _automation_log_clear()
-    _automation_running = True
-    _automation_running_pid = pid
+def _request_automation_cancel(pid: str) -> bool:
+    r = _get_run(pid)
+    if not r or not r.get("running"):
+        return False
+    r["cancel"] = True
+    return True
 
 
-def _end_automation_run() -> None:
-    global _automation_running, _automation_running_pid, _automation_cancel
-    _kill_automation_subproc()
-    _automation_running = False
-    _automation_running_pid = None
-    _automation_cancel = False
+def _try_begin_automation_run(pid: str) -> tuple[bool, str | None]:
+    """Register a new run for `pid`. Returns (ok, error_reason).
+    Enforces: one run per window, and a global cap of MAX_PARALLEL_AUTO."""
+    with _automation_lock:
+        cur = _auto_runs.get(pid)
+        if cur and cur.get("running"):
+            return False, "already_running"
+        active = [p for p, r in _auto_runs.items() if r.get("running") and p != pid]
+        if len(active) >= MAX_PARALLEL_AUTO:
+            return False, "limit"
+        _auto_runs[pid] = _new_run_record(pid)
+        return True, None
+
+
+def _end_automation_run(pid: str) -> None:
+    _kill_automation_subproc(pid)
+    with _automation_lock:
+        r = _auto_runs.get(pid)
+        if r:
+            r["running"] = False
+            r["cancel"] = False
 
 
 def _msk_now() -> datetime:
@@ -1206,7 +1328,7 @@ def _validate_factiva_dom(factiva_dom: dict) -> None:
         )
 
 
-def _run_factiva_export_blocking(factiva_dom: dict) -> str:
+def _run_factiva_export_blocking(factiva_dom: dict, *, pid: str) -> str:
     """RPA: runJob() — Factiva export; streams logs to /stream like manual export."""
     global _job_proc, _job_done, _job_out
     with _job_lock:
@@ -1228,7 +1350,7 @@ def _run_factiva_export_blocking(factiva_dom: dict) -> str:
             break
 
     start_msg = f"[auto] Запуск Factiva: {data.get('search') or data.get('query') or data.get('outName')}"
-    _automation_log_push(start_msg)
+    _automation_log_push(pid, start_msg)
     _job_queue.put(start_msg)
 
     proc = subprocess.Popen(
@@ -1242,12 +1364,12 @@ def _run_factiva_export_blocking(factiva_dom: dict) -> str:
         env={**os.environ, "PYTHONUNBUFFERED": "1"},
     )
     _job_proc = proc
-    _set_automation_subproc(proc)
+    _set_automation_subproc(pid, proc)
 
     def _reader() -> None:
         global _job_done, _job_out
         try:
-            _drain_automation_subproc_stdout(proc)
+            _drain_automation_subproc_stdout(pid, proc)
         finally:
             rc = proc.wait()
             _job_done = True
@@ -1271,7 +1393,8 @@ def _run_factiva_export_blocking(factiva_dom: dict) -> str:
             if time.time() > deadline:
                 proc.kill()
                 raise RuntimeError("factiva_agent timeout (3600s)")
-            if _automation_cancel:
+            r = _get_run(pid)
+            if r and r.get("cancel"):
                 try:
                     proc.terminate()
                     proc.wait(timeout=5)
@@ -1282,10 +1405,9 @@ def _run_factiva_export_blocking(factiva_dom: dict) -> str:
 
         if reader.is_alive():
             reader.join(timeout=5)
-        if _automation_cancel:
-            raise AutomationCancelled("Остановлено пользователем")
+        _check_automation_cancel(pid)
         if proc.returncode != 0:
-            tail = "\n".join(_automation_log_tail(20))[-800:]
+            tail = "\n".join(_automation_log_tail(pid, 20))[-800:]
             raise RuntimeError(f"factiva_agent exit {proc.returncode}: {tail}")
         out_idx = args.index("--out") + 1
         path = Path(args[out_idx])
@@ -1293,7 +1415,7 @@ def _run_factiva_export_blocking(factiva_dom: dict) -> str:
             raise RuntimeError("Файл экспорта не создан")
         return path.name
     finally:
-        _set_automation_subproc(None)
+        _set_automation_subproc(pid, None)
 
 
 def _tc_date_range_from_dom(tc_dom: dict) -> tuple[str | None, str | None]:
@@ -2075,7 +2197,7 @@ def _execute_pipeline_automation(pipeline: dict, slot_key: str | None = None):
             refresh_attempts = attempt
 
             # ── 01 Export ──
-            _check_automation_cancel()
+            _check_automation_cancel(pid)
             pipeline, wf = _reload_pipeline_state(pid)
             _set_pipeline_auto_status(
                 pid, "export", ok=True,
@@ -2098,12 +2220,27 @@ def _execute_pipeline_automation(pipeline: dict, slot_key: str | None = None):
                     exclude_published_pid=pid,
                     exclude_platform=default_platform,
                     progress_cb=_tc_progress,
-                    cancel_cb=_check_automation_cancel,
+                    cancel_cb=lambda: _check_automation_cancel(pid),
                 )
             else:
                 factiva_dom = wf.get("factivaDom") or {}
                 _validate_factiva_dom(factiva_dom)
-                filename = _run_factiva_export_blocking(factiva_dom)
+                # Factiva drives a single external browser — serialize across windows.
+                got = _factiva_lock.acquire(blocking=False)
+                if not got:
+                    _set_pipeline_auto_status(
+                        pid, "export", ok=True,
+                        extra={"phase": "running", "attempt": attempt + 1,
+                               "waiting_factiva": True},
+                    )
+                    # Wait for the other window's Factiva export, honoring cancel.
+                    while not _factiva_lock.acquire(timeout=2):
+                        _check_automation_cancel(pid)
+                try:
+                    _check_automation_cancel(pid)
+                    filename = _run_factiva_export_blocking(factiva_dom, pid=pid)
+                finally:
+                    _factiva_lock.release()
                 try:
                     arts = load_articles(str(BASE_DIR / "exports" / filename))
                     kept, excl_n = _filter_articles_excluding_published(arts, pid, default_platform)
@@ -2159,7 +2296,7 @@ def _execute_pipeline_automation(pipeline: dict, slot_key: str | None = None):
             _set_pipeline_auto_status(pid, "export", ok=True, extra=export_extra)
 
             # ── 02 Sources ──
-            _check_automation_cancel()
+            _check_automation_cancel(pid)
             _set_pipeline_auto_status(
                 pid, "sources", ok=True,
                 extra={"phase": "running", "articles_in_export": export_count},
@@ -2169,7 +2306,7 @@ def _execute_pipeline_automation(pipeline: dict, slot_key: str | None = None):
             excluded = _excluded_sources_for_automation(wf, filename)
 
             # ── 03 Topics ──
-            _check_automation_cancel()
+            _check_automation_cancel(pid)
             _set_pipeline_auto_status(
                 pid, "topics", ok=True,
                 extra={"phase": "running", "articles_in_export": export_count},
@@ -2189,7 +2326,7 @@ def _execute_pipeline_automation(pipeline: dict, slot_key: str | None = None):
             # ── 04 Article topics ──
             article_topics_list = None
             if pipeline.get("auto_run_article_topics", True):
-                _check_automation_cancel()
+                _check_automation_cancel(pid)
                 _set_pipeline_auto_status(pid, "article_topics", ok=True, extra={"phase": "running"})
                 article_topics_list = _rpa_generate_article_topics(wf, pipeline, filename, topics, max_drafts)
                 wf["articleTopics"] = article_topics_list
@@ -2197,7 +2334,7 @@ def _execute_pipeline_automation(pipeline: dict, slot_key: str | None = None):
                 _save_pipeline_workflow(pid, wf)
 
             # ── 05 Writer ──
-            _check_automation_cancel()
+            _check_automation_cancel(pid)
             _set_pipeline_auto_status(pid, "drafts", ok=True, extra={"phase": "running"})
             draft_result = _rpa_generate_drafts(
                 wf, pipeline, filename, topics, article_topics_list, excluded,
@@ -2260,7 +2397,7 @@ def _execute_pipeline_automation(pipeline: dict, slot_key: str | None = None):
         _save_pipeline_workflow(pid, wf)
 
         # ── 06 Publisher ──
-        _check_automation_cancel()
+        _check_automation_cancel(pid)
         slots = _compute_publish_slots(pipeline, len(drafts))
         if not slots:
             raise RuntimeError("Нет слотов публикации — задайте расписание в MSK")
@@ -2372,18 +2509,33 @@ def _tick_pipeline_automation():
                     _save_pipelines(pdata)
             continue
 
-        with _automation_lock:
-            if _automation_running:
-                return
-            _begin_automation_run(p["id"])
+        # Launch this window's run in its own thread (parallel per window,
+        # capped at MAX_PARALLEL_AUTO). Skip windows already running or over cap.
+        ok, reason = _try_begin_automation_run(p["id"])
+        if not ok:
+            if reason == "limit":
+                # No free slot right now; try again on the next tick.
+                break
+            continue
+        _spawn_automation_thread(dict(p), slot_key if not refresh else None)
+
+
+def _spawn_automation_thread(pipeline: dict, slot_key: str | None) -> None:
+    pid = pipeline["id"]
+
+    def _worker():
         try:
-            _execute_pipeline_automation(p, slot_key if not refresh else None)
+            _execute_pipeline_automation(pipeline, slot_key)
         except Exception:
             pass
         finally:
-            with _automation_lock:
-                _end_automation_run()
-        return
+            _end_automation_run(pid)
+
+    t = threading.Thread(target=_worker, name=f"auto-{pid}", daemon=True)
+    r = _get_run(pid)
+    if r is not None:
+        r["thread"] = t
+    t.start()
 
 
 def _pipeline_automation_loop():
@@ -3593,38 +3745,48 @@ def run_pipeline_automation_now(pid):
             "cooldown": True,
         }), 429
 
-    _maybe_recover_stuck_automation()
+    _maybe_recover_stuck_automation(pid)
 
-    with _automation_lock:
-        if _automation_running:
-            return jsonify({"error": "Автоматизация уже выполняется"}), 409
-        _begin_automation_run(pid)
+    ok, reason = _try_begin_automation_run(pid)
+    if not ok:
+        if reason == "limit":
+            active = _active_run_pids()
+            return jsonify({
+                "error": f"Достигнут лимит параллельных прогонов ({MAX_PARALLEL_AUTO}). "
+                          f"Сейчас работает: {len(active)}",
+                "limit": True,
+                "active": active,
+            }), 429
+        return jsonify({"error": "Автоматизация этого окна уже выполняется"}), 409
 
     def _bg():
         try:
             _execute_pipeline_automation(pipeline, slot_key=None)
         except Exception as e:
             import traceback
-            _automation_log_push(f"[auto] FATAL: {e}")
+            _automation_log_push(pid, f"[auto] FATAL: {e}")
             traceback.print_exc()
         finally:
-            with _automation_lock:
-                _end_automation_run()
+            _end_automation_run(pid)
 
-    threading.Thread(target=_bg, daemon=True).start()
+    t = threading.Thread(target=_bg, name=f"auto-{pid}", daemon=True)
+    r = _get_run(pid)
+    if r is not None:
+        r["thread"] = t
+    t.start()
     return jsonify({"ok": True, "started": True})
 
 
 @app.route("/pipelines/<pid>/stop-auto", methods=["POST"])
 def stop_pipeline_automation(pid):
-    """Request stop for running automation; optionally disable auto schedule."""
-    global _automation_cancel
+    """Request stop for THIS window's automation; optionally disable schedule."""
     body = request.json or {}
     disable = bool(body.get("disable_auto", False))
     force = bool(body.get("force", False))
-    _automation_cancel = True
-    _kill_automation_subproc()
-    if _automation_running and _automation_running_pid == pid:
+
+    _request_automation_cancel(pid)
+    _kill_automation_subproc(pid)
+    if _automation_running_for(pid):
         _set_pipeline_auto_status(pid, "cancelled", ok=False, error="Остановлено пользователем")
     if disable:
         with _pipelines_lock:
@@ -3633,38 +3795,54 @@ def stop_pipeline_automation(pid):
             if p:
                 p["auto_enabled"] = False
                 _save_pipelines(pdata)
-    # Force-clear a stuck flag: if no live subprocess, the run is either an
-    # in-thread job that will honour the cancel flag, or a zombie flag with no
-    # worker at all. In the latter case reset immediately so the UI unsticks.
+    # Force-clear a stuck flag for THIS window only: if no live subprocess, the
+    # run is either an in-thread job honouring the cancel flag, or a zombie
+    # flag with no worker. In the latter case reset immediately.
     forced = False
-    if force and not _automation_subproc_alive():
-        if _automation_running and _automation_running_pid == pid:
+    if force and not _automation_subproc_alive(pid):
+        if _automation_running_for(pid):
             _set_pipeline_auto_status(
                 pid, "cancelled", ok=False, error="Остановлено пользователем (принудительно)",
             )
-        _end_automation_run()
+        _end_automation_run(pid)
         forced = True
     else:
-        # Clear obvious zombies (running flag but dead/absent subprocess)
-        _maybe_recover_stuck_automation()
+        _maybe_recover_stuck_automation(pid)
     return jsonify({
         "ok": True,
-        "stopping": _automation_running,
-        "running_pid": _automation_running_pid,
+        "stopping": _automation_running_for(pid),
+        "running_pid": pid if _automation_running_for(pid) else None,
         "forced": forced,
     })
 
 
 @app.route("/automation/status", methods=["GET"])
 def automation_status():
-    _maybe_recover_stuck_automation()
+    """Per-window status. Pass ?pipeline_id=<pid> for a specific window.
+    Without it, returns the list of currently active windows."""
+    req_pid = (request.args.get("pipeline_id") or "").strip() or None
+    active_steps = {"export", "sources", "topics", "article_topics", "drafts", "schedule"}
+
+    if not req_pid:
+        # Clean up zombies across all known runs, then report active windows.
+        for apid in list(_active_run_pids()):
+            _maybe_recover_stuck_automation(apid)
+        active = _active_run_pids()
+        return jsonify({
+            "running": bool(active),
+            "active": active,
+            "count": len(active),
+            "max_parallel": MAX_PARALLEL_AUTO,
+        })
+
+    _maybe_recover_stuck_automation(req_pid)
+    running = _automation_running_for(req_pid)
     step = None
     status_at = None
     extra: dict = {}
-    active_steps = {"export", "sources", "topics", "article_topics", "drafts", "schedule"}
-    if _automation_running and _automation_running_pid:
+    if running:
         with _pipelines_lock:
-            p = _find_pipeline(_load_pipelines(), _automation_running_pid)
+            p = _find_pipeline(_load_pipelines(), req_pid)
         if p:
             st = p.get("auto_last_status") or {}
             step = st.get("step")
@@ -3672,18 +3850,22 @@ def automation_status():
             for key in (
                 "file", "drafts", "scheduled", "articles_in_export",
                 "platform", "warning", "skipped_duplicates", "error", "ok",
+                "tc_fetch_done", "tc_fetch_total", "waiting_factiva", "attempt",
             ):
                 if key in st and st[key] is not None:
                     extra[key] = st[key]
             if step in active_steps:
                 extra["in_progress"] = True
+    r = _get_run(req_pid)
     return jsonify({
-        "running": _automation_running,
-        "pipeline_id": _automation_running_pid,
-        "cancel_requested": _automation_cancel,
+        "running": running,
+        "pipeline_id": req_pid,
+        "cancel_requested": bool(r and r.get("cancel")),
         "step": step,
         "status_at": status_at,
-        "log_tail": _automation_log_tail(12),
+        "log_tail": _automation_log_tail(req_pid, 12),
+        "active": _active_run_pids(),
+        "max_parallel": MAX_PARALLEL_AUTO,
         **extra,
     })
 
