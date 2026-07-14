@@ -1393,6 +1393,7 @@ def _run_techcrunch_export_blocking(
     exclude_published_pid: str | None = None,
     exclude_platform: str | None = None,
     progress_cb=None,
+    cancel_cb=None,
 ) -> str:
     """RPA: mirror applyTechCrunchToTopics — full batch up to max, not checkbox subset."""
     from techcrunch_feed import fetch_page_body_for_url, save_articles_json
@@ -1465,6 +1466,8 @@ def _run_techcrunch_export_blocking(
             pass
     if fetch_full_body:
         for idx, article in enumerate(selected):
+            if callable(cancel_cb):
+                cancel_cb()  # raises AutomationCancelled if stop requested
             url = (article.get("url") or "").strip()
             current = (article.get("body") or "").strip()
             if url:
@@ -2095,6 +2098,7 @@ def _execute_pipeline_automation(pipeline: dict, slot_key: str | None = None):
                     exclude_published_pid=pid,
                     exclude_platform=default_platform,
                     progress_cb=_tc_progress,
+                    cancel_cb=_check_automation_cancel,
                 )
             else:
                 factiva_dom = wf.get("factivaDom") or {}
@@ -3617,6 +3621,7 @@ def stop_pipeline_automation(pid):
     global _automation_cancel
     body = request.json or {}
     disable = bool(body.get("disable_auto", False))
+    force = bool(body.get("force", False))
     _automation_cancel = True
     _kill_automation_subproc()
     if _automation_running and _automation_running_pid == pid:
@@ -3628,10 +3633,25 @@ def stop_pipeline_automation(pid):
             if p:
                 p["auto_enabled"] = False
                 _save_pipelines(pdata)
+    # Force-clear a stuck flag: if no live subprocess, the run is either an
+    # in-thread job that will honour the cancel flag, or a zombie flag with no
+    # worker at all. In the latter case reset immediately so the UI unsticks.
+    forced = False
+    if force and not _automation_subproc_alive():
+        if _automation_running and _automation_running_pid == pid:
+            _set_pipeline_auto_status(
+                pid, "cancelled", ok=False, error="Остановлено пользователем (принудительно)",
+            )
+        _end_automation_run()
+        forced = True
+    else:
+        # Clear obvious zombies (running flag but dead/absent subprocess)
+        _maybe_recover_stuck_automation()
     return jsonify({
         "ok": True,
         "stopping": _automation_running,
         "running_pid": _automation_running_pid,
+        "forced": forced,
     })
 
 

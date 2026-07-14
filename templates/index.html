@@ -1651,6 +1651,21 @@
       color: var(--muted);
       min-height: 16px;
     }
+    .auto-conveyor-log {
+      margin: 6px 0 0;
+      padding: 6px 8px;
+      max-height: 132px;
+      overflow-y: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10.5px;
+      line-height: 1.45;
+      color: var(--muted);
+      background: rgba(0, 0, 0, 0.28);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
     .pipe-auto-status.running { color: var(--sky); }
     @media (max-width: 720px) {
       .pipeline-window-meta {
@@ -2841,6 +2856,7 @@
     <div class="auto-conveyor hidden" id="auto-conveyor" aria-live="polite">
       <div class="auto-conveyor-steps" id="auto-conveyor-steps"></div>
       <div class="auto-conveyor-detail" id="auto-conveyor-detail"></div>
+      <pre class="auto-conveyor-log hidden" id="auto-conveyor-log" aria-live="polite"></pre>
     </div>
     <span class="pipeline-window-hint">Каждая вкладка — полный пайплайн: парсинг → темы → писатель → публикация</span>
   </div>
@@ -8201,6 +8217,19 @@
     if (el) el.classList.toggle('hidden', !show);
   }
 
+  function renderAutomationLiveLog(logTail, running) {
+    const el = document.getElementById('auto-conveyor-log');
+    if (!el) return;
+    if (!running || !Array.isArray(logTail) || !logTail.length) {
+      el.classList.add('hidden');
+      el.textContent = '';
+      return;
+    }
+    el.textContent = logTail.slice(-12).join('\n');
+    el.classList.remove('hidden');
+    el.scrollTop = el.scrollHeight;
+  }
+
   function syncAutomationConveyor(st, running) {
     const wrap = document.getElementById('auto-conveyor-steps');
     const detail = document.getElementById('auto-conveyor-detail');
@@ -8312,6 +8341,7 @@
     renderPipelineWindowHeader();
     const st = p?.auto_last_status || {};
     syncAutomationConveyor(st, running);
+    renderAutomationLiveLog(sd.log_tail, running);
     applyAutomationStepProgress(st, running);
     setPipelineAutoRunningUi(running);
     return { p, st, running };
@@ -8969,6 +8999,26 @@
     if (stopBtn) stopBtn.classList.toggle('hidden', !running);
   }
 
+  function _forceClearAutomationUi() {
+    // Hard reset of the local «running» state so the toggle/buttons never stick.
+    _automationUiRunning = false;
+    stopAutomationFastPoll();
+    showAutomationConveyor(false);
+    setPipelineAutoRunningUi(false);
+    const miniEl = document.getElementById('pipeline-auto-mini-status');
+    if (miniEl) miniEl.textContent = '';
+  }
+
+  async function _postStopAuto(disableAuto, force) {
+    const r = await fetch(`/pipelines/${encodeURIComponent(activePipelineId)}/stop-auto`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ disable_auto: !!disableAuto, force: !!force }),
+    });
+    return r.json();
+  }
+
   async function stopPipelineAuto(disableAuto = false) {
     if (!activePipelineId) return;
     setPipelineAutoRunningUi(true);
@@ -8978,32 +9028,43 @@
       statusEl.className = 'pipe-auto-status';
     }
     try {
-      const r = await fetch(`/pipelines/${encodeURIComponent(activePipelineId)}/stop-auto`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ disable_auto: !!disableAuto }),
-      });
-      const d = await r.json();
+      const d = await _postStopAuto(disableAuto, false);
       if (d.error) alert(d.error);
       if (disableAuto) {
         const autoEn = document.getElementById('pipeline-auto-enabled');
         if (autoEn) autoEn.checked = false;
       }
-      await pollPipelineAutoUntilDone(activePipelineId, 120, 1000);
+      // Wait briefly for a graceful stop
+      await pollPipelineAutoUntilDone(activePipelineId, 15, 1000);
+
+      // Still running? Escalate to a forced stop so it never gets stuck.
+      let sd = {};
+      try {
+        const sr = await fetch('/automation/status', { credentials: 'same-origin' });
+        sd = await sr.json();
+      } catch (e) {}
+      if (sd.running) {
+        if (statusEl) statusEl.textContent = 'Принудительная остановка…';
+        await _postStopAuto(disableAuto, true);
+        await new Promise(res => setTimeout(res, 600));
+      }
     } catch (e) {
       alert('Ошибка: ' + e);
     } finally {
       try {
         const sr = await fetch('/automation/status', { credentials: 'same-origin' });
         const sd = await sr.json();
-        setPipelineAutoRunningUi(!!sd.running);
         if (!sd.running) {
-          stopAutomationFastPoll();
-          showAutomationConveyor(false);
+          _forceClearAutomationUi();
+          if (statusEl) { statusEl.textContent = 'Остановлено'; statusEl.className = 'pipe-auto-status'; }
+        } else {
+          // Last resort: force again and clear UI anyway
+          await _postStopAuto(disableAuto, true);
+          _forceClearAutomationUi();
+          if (statusEl) { statusEl.textContent = 'Остановлено (принудительно)'; statusEl.className = 'pipe-auto-status'; }
         }
       } catch (e) {
-        setPipelineAutoRunningUi(false);
+        _forceClearAutomationUi();
       }
     }
   }
