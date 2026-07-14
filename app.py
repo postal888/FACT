@@ -185,10 +185,17 @@ def _token_jaccard(a: str, b: str) -> float:
     return _jaccard(_title_tokens(a or ""), _title_tokens(b or ""))
 
 
-def _publisher_stack_file_for(pid: str) -> Path:
+def _safe_pid(pid: str) -> str:
+    """Filesystem-safe pipeline key. MUST be used both for the file name and
+    for bucketing on save, otherwise a raw pid (e.g. 'Cin Window') and its
+    sanitized file key ('Cin_Window') collide on the same file and one
+    overwrites the other — silently losing or resurrecting queue items."""
     import re
-    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", (pid or DEFAULT_PIPELINE_ID)) or DEFAULT_PIPELINE_ID
-    return BASE_DIR / f"publisher_stack_{safe}.json"
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", (pid or DEFAULT_PIPELINE_ID)) or DEFAULT_PIPELINE_ID
+
+
+def _publisher_stack_file_for(pid: str) -> Path:
+    return BASE_DIR / f"publisher_stack_{_safe_pid(pid)}.json"
 
 
 def _migrate_legacy_publisher_stack() -> None:
@@ -203,9 +210,9 @@ def _migrate_legacy_publisher_stack() -> None:
         buckets: dict[str, list] = {}
         for x in data:
             it = _normalize_stack_item(x)
-            buckets.setdefault(it.get("pipeline") or DEFAULT_PIPELINE_ID, []).append(it)
-        for pid, items in buckets.items():
-            f = _publisher_stack_file_for(pid)
+            buckets.setdefault(_safe_pid(it.get("pipeline") or DEFAULT_PIPELINE_ID), []).append(it)
+        for safe, items in buckets.items():
+            f = BASE_DIR / f"publisher_stack_{safe}.json"
             if not f.exists():
                 f.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
     # Retire the legacy file so it is not read again.
@@ -254,15 +261,19 @@ def _save_publisher_stack(stack: list) -> None:
 
     Rewrites every known window file so deletions propagate; a window that
     lost all its items is written as an empty list."""
+    # Bucket by the SAME sanitized key used for the file name, so a raw pid
+    # and its sanitized form never map to the same file under two different
+    # keys (which caused deletions to be silently reverted / over-applied).
     buckets: dict[str, list] = {}
     for x in stack:
         it = _normalize_stack_item(x)
-        buckets.setdefault(it.get("pipeline") or DEFAULT_PIPELINE_ID, []).append(it)
-    # Ensure windows that became empty are cleared too.
-    for pid in _publisher_stack_pids():
-        buckets.setdefault(pid, [])
-    for pid, items in buckets.items():
-        _publisher_stack_file_for(pid).write_text(
+        buckets.setdefault(_safe_pid(it.get("pipeline") or DEFAULT_PIPELINE_ID), []).append(it)
+    # Ensure windows that became empty are cleared too (pids here are already
+    # the sanitized file keys returned by _publisher_stack_pids()).
+    for safe in _publisher_stack_pids():
+        buckets.setdefault(safe, [])
+    for safe, items in buckets.items():
+        (BASE_DIR / f"publisher_stack_{safe}.json").write_text(
             json.dumps(items, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )

@@ -9284,6 +9284,9 @@
       await loadActivePipelineStack();
       await loadPipelines();
       renderPipelinePanel();
+      if (!d.removed) {
+        alert('Ничего не удалено — возможно, посты уже обновились. Обновите страницу и попробуйте снова.');
+      }
     } catch (e) {
       alert('Ошибка: ' + e);
     }
