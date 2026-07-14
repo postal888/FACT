@@ -9031,6 +9031,7 @@
 
   async function stopPipelineAuto(disableAuto = false) {
     if (!activePipelineId) return;
+    const pidToStop = activePipelineId;
     setPipelineAutoRunningUi(true);
     const statusEl = document.getElementById('pipeline-auto-status');
     if (statusEl) {
@@ -9045,15 +9046,16 @@
         if (autoEn) autoEn.checked = false;
       }
       // Wait briefly for a graceful stop
-      await pollPipelineAutoUntilDone(activePipelineId, 15, 1000);
+      await pollPipelineAutoUntilDone(pidToStop, 15, 1000);
 
       // Still running? Escalate to a forced stop so it never gets stuck.
+      // Scope the check to THIS window so another running window is ignored.
       let sd = {};
       try {
-        const sr = await fetch('/automation/status', { credentials: 'same-origin' });
+        const sr = await fetch('/automation/status?pipeline_id=' + encodeURIComponent(pidToStop), { credentials: 'same-origin' });
         sd = await sr.json();
       } catch (e) {}
-      if (sd.running) {
+      if (sd.running && (!sd.pipeline_id || sd.pipeline_id === pidToStop)) {
         if (statusEl) statusEl.textContent = 'Принудительная остановка…';
         await _postStopAuto(disableAuto, true);
         await new Promise(res => setTimeout(res, 600));
@@ -9062,9 +9064,10 @@
       alert('Ошибка: ' + e);
     } finally {
       try {
-        const sr = await fetch('/automation/status', { credentials: 'same-origin' });
+        const sr = await fetch('/automation/status?pipeline_id=' + encodeURIComponent(pidToStop), { credentials: 'same-origin' });
         const sd = await sr.json();
-        if (!sd.running) {
+        const stillHere = !!sd.running && (!sd.pipeline_id || sd.pipeline_id === pidToStop);
+        if (!stillHere) {
           _forceClearAutomationUi();
           if (statusEl) { statusEl.textContent = 'Остановлено'; statusEl.className = 'pipe-auto-status'; }
         } else {
@@ -9799,43 +9802,58 @@
   }
 
   async function initPipelines() {
-    await loadPipelines();
+    try { await loadPipelines(); } catch (e) { console.error('loadPipelines failed', e); }
     try {
       const saved = localStorage.getItem('factiva.activePipelineId');
       if (saved && pipelines.some(p => p.id === saved)) activePipelineId = saved;
     } catch (e) {}
     if (!activePipelineId && pipelines.length) activePipelineId = pipelines[0].id;
 
-    for (const p of pipelines) {
-      const local = loadWorkflowContextLocal(p.id);
-      if (local) pipelineContexts[p.id] = local;
-    }
-    migrateLegacyWorkflowState();
+    // Render the window tabs/header as early as possible so a later failure
+    // (workflow load, stack load, etc.) can never leave the header blank.
+    try { renderPipelineTabs(); } catch (e) { console.error('renderPipelineTabs failed', e); }
+    try { renderPipelineWindowHeader(); } catch (e) { console.error('renderPipelineWindowHeader failed', e); }
 
-    if (activePipelineId) await loadWorkflowFromServer(activePipelineId);
-    const ctx = pipelineContexts[activePipelineId] || emptyWorkflowContext();
-    await applyWorkflowContext(ctx);
-    renderPipelineTabs();
-    renderPipelineWindowHeader();
-    renderPipelinePanel();
-    await loadActivePipelineStack();
+    try {
+      for (const p of pipelines) {
+        const local = loadWorkflowContextLocal(p.id);
+        if (local) pipelineContexts[p.id] = local;
+      }
+      migrateLegacyWorkflowState();
+    } catch (e) { console.error('workflow context restore failed', e); }
+
+    try {
+      if (activePipelineId) await loadWorkflowFromServer(activePipelineId);
+      const ctx = pipelineContexts[activePipelineId] || emptyWorkflowContext();
+      await applyWorkflowContext(ctx);
+    } catch (e) { console.error('applyWorkflowContext failed', e); }
+    // Re-render after workflow apply (badges/state may have changed).
+    try { renderPipelineTabs(); } catch (e) {}
+    try { renderPipelineWindowHeader(); } catch (e) {}
+    try { renderPipelinePanel(); } catch (e) { console.error('renderPipelinePanel failed', e); }
+    try { await loadActivePipelineStack(); } catch (e) { console.error('loadActivePipelineStack failed', e); }
   }
 
   // init publisher UI from saved queue + stack
   initPubTimezoneSelect();
   updatePublisherWorkspace();
   (async () => {
-    await loadExportsAndTwitter();
-    const loaded = await loadPublisherStackFromServer();
-    if (!loaded && _publisherStack.length) await syncPublisherStackToServer();
-    await initPipelines();
+    try { await loadExportsAndTwitter(); } catch (e) { console.error('loadExportsAndTwitter failed', e); }
+    try {
+      const loaded = await loadPublisherStackFromServer();
+      if (!loaded && _publisherStack.length) await syncPublisherStackToServer();
+    } catch (e) { console.error('publisher stack init failed', e); }
+    // initPipelines renders the window tabs/header — must always run even if
+    // the publisher/export init above failed.
+    try { await initPipelines(); } catch (e) { console.error('initPipelines failed', e); }
     const activePipe = pipelines.find(x => x.id === activePipelineId);
     if (activePipe?.auto_enabled) {
       startAutomationUiWatch();
       try {
-        const sr = await fetch('/automation/status', { credentials: 'same-origin' });
+        const sr = await fetch('/automation/status?pipeline_id=' + encodeURIComponent(activePipelineId), { credentials: 'same-origin' });
         const sd = await sr.json();
-        if (!sd.running) {
+        const runningHere = !!sd.running && (!sd.pipeline_id || sd.pipeline_id === activePipelineId);
+        if (!runningHere) {
           const st = activePipe.auto_last_status || {};
           const needsKick = !st.step || st.step === 'cancelled' || st.step === 'error' || st.ok === false;
           if (needsKick) await triggerPipelineAutoRun({ quiet: true, onCooldownForce: true });
