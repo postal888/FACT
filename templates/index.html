@@ -7205,6 +7205,18 @@
       const viewBtn = item.text.length > 400
         ? `<button type="button" class="stack-item-view-btn" onclick="event.stopPropagation();openPostViewer(${JSON.stringify(item.text)},${JSON.stringify(fullMeta)},${JSON.stringify(item.title || '')})">Полный текст</button>`
         : '';
+      const tzShort = pubTimezoneShort();
+      const hasTime = !!item.scheduledAt;
+      const timeRow = `<div class="stack-time-row" onclick="event.stopPropagation()">
+             <label for="pq-time-${idx}">Время публикации (${escHtml(tzShort)})</label>
+             <input type="datetime-local" id="pq-time-${idx}" class="stack-time-input"
+               value="${escHtml(hasTime ? toDatetimeLocalValue(item.scheduledAt) : '')}"
+               onclick="event.stopPropagation()"
+               onchange="setPublisherQueueItemTime(${idx}, this.value)">
+             ${hasTime
+               ? `<button type="button" class="btn btn-ghost btn-sm" title="Сбросить — время подставится автоматически по слотам" onclick="event.stopPropagation();clearPublisherQueueItemTime(${idx})">Авто</button>`
+               : `<span class="stack-item-meta" style="margin:0">авто по слотам</span>`}
+           </div>`;
       return `
         <div class="publisher-item${checked ? ' is-checked' : ''}" data-pq="${idx}" data-id="${escHtml(item.id)}"
           draggable="true"
@@ -7221,6 +7233,7 @@
           <div class="publisher-item-body">
             <div class="publisher-item-text" onclick="openPostViewer(${JSON.stringify(item.text)},${JSON.stringify(fullMeta)},${JSON.stringify(item.title || '')})" title="Нажмите, чтобы открыть полностью">${escHtml(preview)}</div>
             ${viewBtn}
+            ${timeRow}
             <div class="publisher-item-meta">${escHtml(meta)} · ${item.platform === 'telegram' ? 'Telegram' : 'Twitter'}</div>
             <div id="pq-result-${idx}" class="tw-post-result" style="${item.resultHtml ? '' : 'display:none'}">${item.resultHtml || ''}</div>
           </div>
@@ -7270,6 +7283,25 @@
   function removePublisherItem(idx) {
     _publisherQueue.splice(idx, 1);
     savePublisherQueue();
+  }
+
+  function setPublisherQueueItemTime(idx, value) {
+    const item = _publisherQueue[idx];
+    if (!item) return;
+    if (!value) { delete item.scheduledAt; savePublisherQueue(); renderPublisherQueue(); return; }
+    const d = parseInTimeZone(value, getPubTimezone());
+    if (!d || Number.isNaN(d.getTime())) { alert('Некорректное время'); return; }
+    item.scheduledAt = d.toISOString();
+    savePublisherQueue();
+    renderPublisherQueue();
+  }
+
+  function clearPublisherQueueItemTime(idx) {
+    const item = _publisherQueue[idx];
+    if (!item) return;
+    delete item.scheduledAt;
+    savePublisherQueue();
+    renderPublisherQueue();
   }
 
   function removeSelectedPublisherItems() {
@@ -9698,10 +9730,15 @@
       return;
     }
     let posts = collectSelectedPosts();
+    // Track which staging-queue ids were scheduled so we can remove them after.
+    let stagedIds = [];
     if (!posts.length) {
-      posts = _publisherQueue.filter(x => x.checked).map(x => ({
+      const stagedSel = _publisherQueue.filter(x => x.checked);
+      stagedIds = stagedSel.map(x => x.id);
+      posts = stagedSel.map(x => ({
         text: x.text,
         platform: x.platform || 'twitter',
+        scheduledAt: x.scheduledAt || null,
       }));
     }
     if (!posts.length) {
@@ -9715,9 +9752,10 @@
       alert('Задайте расписание публикации в блоке автоматизации');
       return;
     }
+    // Per-post manual time (from the staging queue) overrides the auto slot.
     const items = posts.map((p, i) => ({
       text: p.text,
-      scheduledAt: slots[i],
+      scheduledAt: p.scheduledAt || slots[i],
       platform: p.platform || pipeline.default_platform || 'telegram',
     }));
     try {
@@ -9729,6 +9767,13 @@
       });
       const d = await r.json();
       if (d.error) { alert(d.error); return; }
+      // Remove the just-scheduled posts from the staging queue so they don't
+      // linger there (which looked like "nothing happened").
+      if (stagedIds.length) {
+        const staged = new Set(stagedIds);
+        _publisherQueue = _publisherQueue.filter(x => !staged.has(x.id));
+        savePublisherQueue();
+      }
       await loadPipelines();
       renderPipelineTabs();
       await loadActivePipelineStack();
@@ -9737,6 +9782,14 @@
         syncPublisherQueueProgress();
         schedulePublisherPoll();
       }
+      // Kick the server scheduler so any already-due post publishes now
+      // instead of waiting for the next 30s tick.
+      try { await fetch('/publisher-stack/process-now', { method: 'POST', credentials: 'same-origin' }); } catch (e) {}
+      await loadActivePipelineStack();
+      const added = d.added || items.length;
+      const soonest = items.map(x => x.scheduledAt).filter(Boolean).sort()[0];
+      const soonestLabel = soonest ? formatStackWhen(soonest) : '';
+      alert(`Запланировано: ${added}${soonestLabel ? ' · ближайший ' + soonestLabel : ''}`);
     } catch (e) {
       alert('Ошибка: ' + e);
     }
